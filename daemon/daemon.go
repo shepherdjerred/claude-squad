@@ -45,15 +45,25 @@ func RunDaemon(cfg *config.Config) error {
 		defer wg.Done()
 		ticker := time.NewTimer(pollInterval)
 		for {
-			for _, instance := range instances {
-				// We only store started instances, but check anyway.
-				if instance.Started() && !instance.Paused() {
-					if _, hasPrompt := instance.HasUpdated(); hasPrompt {
-						instance.TapEnter()
-						if err := instance.UpdateDiffStats(); err != nil {
-							if everyN.ShouldLog() {
-								log.WarningLog.Printf("could not update diff stats for %s: %v", instance.Title, err)
-							}
+			// Parallel update check - runs HasUpdated() concurrently
+			updateResults := session.ParallelUpdate(instances)
+
+			// Collect instances that need TapEnter and diff stats update
+			var needsDiffStats []*session.Instance
+			for _, result := range updateResults {
+				if result.Instance != nil && result.HasPrompt {
+					result.Instance.TapEnter()
+					needsDiffStats = append(needsDiffStats, result.Instance)
+				}
+			}
+
+			// Parallel diff stats update for instances that had prompts
+			if len(needsDiffStats) > 0 {
+				diffErrors := session.ParallelUpdateDiffStats(needsDiffStats)
+				for i, err := range diffErrors {
+					if err != nil && needsDiffStats[i] != nil {
+						if everyN.ShouldLog() {
+							log.WarningLog.Printf("could not update diff stats for %s: %v", needsDiffStats[i].Title, err)
 						}
 					}
 				}

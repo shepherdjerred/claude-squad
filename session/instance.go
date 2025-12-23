@@ -3,7 +3,6 @@ package session
 import (
 	"claude-squad/log"
 	"claude-squad/session/git"
-	"claude-squad/session/tmux"
 	"path/filepath"
 
 	"fmt"
@@ -58,8 +57,10 @@ type Instance struct {
 	// The below fields are initialized upon calling Start().
 
 	started bool
-	// tmuxSession is the tmux session for the instance.
-	tmuxSession *tmux.TmuxSession
+	// session is the multiplexer session for the instance (tmux or zellij).
+	session Multiplexer
+	// multiplexerType is the type of multiplexer used for this instance.
+	multiplexerType MultiplexerType
 	// gitWorktree is the git worktree for the instance.
 	gitWorktree *git.GitWorktree
 }
@@ -67,16 +68,17 @@ type Instance struct {
 // ToInstanceData converts an Instance to its serializable form
 func (i *Instance) ToInstanceData() InstanceData {
 	data := InstanceData{
-		Title:     i.Title,
-		Path:      i.Path,
-		Branch:    i.Branch,
-		Status:    i.Status,
-		Height:    i.Height,
-		Width:     i.Width,
-		CreatedAt: i.CreatedAt,
-		UpdatedAt: time.Now(),
-		Program:   i.Program,
-		AutoYes:   i.AutoYes,
+		Title:      i.Title,
+		Path:       i.Path,
+		Branch:     i.Branch,
+		Status:     i.Status,
+		Height:     i.Height,
+		Width:      i.Width,
+		CreatedAt:  i.CreatedAt,
+		UpdatedAt:  time.Now(),
+		Program:    i.Program,
+		AutoYes:    i.AutoYes,
+		Multiplexer: string(i.multiplexerType),
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -104,16 +106,23 @@ func (i *Instance) ToInstanceData() InstanceData {
 
 // FromInstanceData creates a new Instance from serialized data
 func FromInstanceData(data InstanceData) (*Instance, error) {
+	// Parse multiplexer type, defaulting to tmux for backwards compatibility
+	mtype := MultiplexerType(data.Multiplexer)
+	if mtype == "" {
+		mtype = MultiplexerTmux
+	}
+
 	instance := &Instance{
-		Title:     data.Title,
-		Path:      data.Path,
-		Branch:    data.Branch,
-		Status:    data.Status,
-		Height:    data.Height,
-		Width:     data.Width,
-		CreatedAt: data.CreatedAt,
-		UpdatedAt: data.UpdatedAt,
-		Program:   data.Program,
+		Title:           data.Title,
+		Path:            data.Path,
+		Branch:          data.Branch,
+		Status:          data.Status,
+		Height:          data.Height,
+		Width:           data.Width,
+		CreatedAt:       data.CreatedAt,
+		UpdatedAt:       data.UpdatedAt,
+		Program:         data.Program,
+		multiplexerType: mtype,
 		gitWorktree: git.NewGitWorktreeFromStorage(
 			data.Worktree.RepoPath,
 			data.Worktree.WorktreePath,
@@ -130,7 +139,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 
 	if instance.Paused() {
 		instance.started = true
-		instance.tmuxSession = tmux.NewTmuxSession(instance.Title, instance.Program)
+		instance.session = NewMultiplexer(mtype, instance.Title, instance.Program)
 	} else {
 		if err := instance.Start(false); err != nil {
 			return nil, err
@@ -150,6 +159,9 @@ type InstanceOptions struct {
 	Program string
 	// If AutoYes is true, then
 	AutoYes bool
+	// Multiplexer is the terminal multiplexer to use ("tmux" or "zellij").
+	// If empty, uses the default for the platform.
+	Multiplexer string
 }
 
 func NewInstance(opts InstanceOptions) (*Instance, error) {
@@ -161,16 +173,23 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
+	// Determine multiplexer type from options or use platform default
+	muxType := MultiplexerType(opts.Multiplexer)
+	if muxType == "" {
+		muxType = DefaultMultiplexer()
+	}
+
 	return &Instance{
-		Title:     opts.Title,
-		Status:    Ready,
-		Path:      absPath,
-		Program:   opts.Program,
-		Height:    0,
-		Width:     0,
-		CreatedAt: t,
-		UpdatedAt: t,
-		AutoYes:   false,
+		Title:           opts.Title,
+		Status:          Ready,
+		Path:            absPath,
+		Program:         opts.Program,
+		Height:          0,
+		Width:           0,
+		CreatedAt:       t,
+		UpdatedAt:       t,
+		AutoYes:         false,
+		multiplexerType: muxType,
 	}, nil
 }
 
@@ -185,21 +204,36 @@ func (i *Instance) SetStatus(status Status) {
 	i.Status = status
 }
 
+// StartWithProgress starts the instance with an optional progress callback.
+// The callback receives status messages during setup.
+func (i *Instance) StartWithProgress(firstTimeSetup bool, progressCallback git.ProgressCallback) error {
+	return i.startInternal(firstTimeSetup, progressCallback)
+}
+
 // firstTimeSetup is true if this is a new instance. Otherwise, it's one loaded from storage.
 func (i *Instance) Start(firstTimeSetup bool) error {
+	return i.startInternal(firstTimeSetup, nil)
+}
+
+func (i *Instance) startInternal(firstTimeSetup bool, progressCallback git.ProgressCallback) error {
 	if i.Title == "" {
 		return fmt.Errorf("instance title cannot be empty")
 	}
 
-	var tmuxSession *tmux.TmuxSession
-	if i.tmuxSession != nil {
-		// Use existing tmux session (useful for testing)
-		tmuxSession = i.tmuxSession
-	} else {
-		// Create new tmux session
-		tmuxSession = tmux.NewTmuxSession(i.Title, i.Program)
+	// Use default multiplexer if not set
+	if i.multiplexerType == "" {
+		i.multiplexerType = DefaultMultiplexer()
 	}
-	i.tmuxSession = tmuxSession
+
+	var session Multiplexer
+	if i.session != nil {
+		// Use existing session (useful for testing)
+		session = i.session
+	} else {
+		// Create new session using factory
+		session = NewMultiplexer(i.multiplexerType, i.Title, i.Program)
+	}
+	i.session = session
 
 	if firstTimeSetup {
 		gitWorktree, branchName, err := git.NewGitWorktree(i.Path, i.Title)
@@ -208,6 +242,10 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 		}
 		i.gitWorktree = gitWorktree
 		i.Branch = branchName
+		// Set progress callback if provided
+		if progressCallback != nil {
+			i.gitWorktree.SetProgressCallback(progressCallback)
+		}
 	}
 
 	// Setup error handler to cleanup resources on any error
@@ -224,7 +262,7 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 
 	if !firstTimeSetup {
 		// Reuse existing session
-		if err := tmuxSession.Restore(); err != nil {
+		if err := session.Restore(); err != nil {
 			setupErr = fmt.Errorf("failed to restore existing session: %w", err)
 			return setupErr
 		}
@@ -235,9 +273,14 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 			return setupErr
 		}
 
+		// Report progress for session start
+		if progressCallback != nil {
+			progressCallback("Starting terminal session...")
+		}
+
 		// Create new session
-		if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath()); err != nil {
-			// Cleanup git worktree if tmux session creation fails
+		if err := i.session.Start(i.gitWorktree.GetWorktreePath()); err != nil {
+			// Cleanup git worktree if session creation fails
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
 				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
 			}
@@ -261,10 +304,10 @@ func (i *Instance) Kill() error {
 	var errs []error
 
 	// Always try to cleanup both resources, even if one fails
-	// Clean up tmux session first since it's using the git worktree
-	if i.tmuxSession != nil {
-		if err := i.tmuxSession.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to close tmux session: %w", err))
+	// Clean up session first since it's using the git worktree
+	if i.session != nil {
+		if err := i.session.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close session: %w", err))
 		}
 	}
 
@@ -298,22 +341,22 @@ func (i *Instance) Preview() (string, error) {
 	if !i.started || i.Status == Paused {
 		return "", nil
 	}
-	return i.tmuxSession.CapturePaneContent()
+	return i.session.CapturePaneContent()
 }
 
 func (i *Instance) HasUpdated() (updated bool, hasPrompt bool) {
 	if !i.started {
 		return false, false
 	}
-	return i.tmuxSession.HasUpdated()
+	return i.session.HasUpdated()
 }
 
-// TapEnter sends an enter key press to the tmux session if AutoYes is enabled.
+// TapEnter sends an enter key press to the session if AutoYes is enabled.
 func (i *Instance) TapEnter() {
 	if !i.started || !i.AutoYes {
 		return
 	}
-	if err := i.tmuxSession.TapEnter(); err != nil {
+	if err := i.session.TapEnter(); err != nil {
 		log.ErrorLog.Printf("error tapping enter: %v", err)
 	}
 }
@@ -322,7 +365,7 @@ func (i *Instance) Attach() (chan struct{}, error) {
 	if !i.started {
 		return nil, fmt.Errorf("cannot attach instance that has not been started")
 	}
-	return i.tmuxSession.Attach()
+	return i.session.Attach()
 }
 
 func (i *Instance) SetPreviewSize(width, height int) error {
@@ -330,7 +373,7 @@ func (i *Instance) SetPreviewSize(width, height int) error {
 		return fmt.Errorf("cannot set preview size for instance that has not been started or " +
 			"is paused")
 	}
-	return i.tmuxSession.SetDetachedSize(width, height)
+	return i.session.SetDetachedSize(width, height)
 }
 
 // GetGitWorktree returns the git worktree for the instance
@@ -346,7 +389,7 @@ func (i *Instance) Started() bool {
 }
 
 // SetTitle sets the title of the instance. Returns an error if the instance has started.
-// We cant change the title once it's been used for a tmux session etc.
+// We cant change the title once it's been used for a session etc.
 func (i *Instance) SetTitle(title string) error {
 	if i.started {
 		return fmt.Errorf("cannot change title of a started instance")
@@ -359,12 +402,12 @@ func (i *Instance) Paused() bool {
 	return i.Status == Paused
 }
 
-// TmuxAlive returns true if the tmux session is alive. This is a sanity check before attaching.
-func (i *Instance) TmuxAlive() bool {
-	return i.tmuxSession.DoesSessionExist()
+// SessionAlive returns true if the multiplexer session is alive. This is a sanity check before attaching.
+func (i *Instance) SessionAlive() bool {
+	return i.session.DoesSessionExist()
 }
 
-// Pause stops the tmux session and removes the worktree, preserving the branch
+// Pause stops the session and removes the worktree, preserving the branch
 func (i *Instance) Pause() error {
 	if !i.started {
 		return fmt.Errorf("cannot pause instance that has not been started")
@@ -390,9 +433,9 @@ func (i *Instance) Pause() error {
 		}
 	}
 
-	// Detach from tmux session instead of closing to preserve session output
-	if err := i.tmuxSession.DetachSafely(); err != nil {
-		errs = append(errs, fmt.Errorf("failed to detach tmux session: %w", err))
+	// Detach from session instead of closing to preserve session output
+	if err := i.session.DetachSafely(); err != nil {
+		errs = append(errs, fmt.Errorf("failed to detach session: %w", err))
 		log.ErrorLog.Print(err)
 		// Continue with pause process even if detach fails
 	}
@@ -424,7 +467,7 @@ func (i *Instance) Pause() error {
 	return nil
 }
 
-// Resume recreates the worktree and restarts the tmux session
+// Resume recreates the worktree and restarts the session
 func (i *Instance) Resume() error {
 	if !i.started {
 		return fmt.Errorf("cannot resume instance that has not been started")
@@ -447,15 +490,15 @@ func (i *Instance) Resume() error {
 		return fmt.Errorf("failed to setup git worktree: %w", err)
 	}
 
-	// Check if tmux session still exists from pause, otherwise create new one
-	if i.tmuxSession.DoesSessionExist() {
+	// Check if session still exists from pause, otherwise create new one
+	if i.session.DoesSessionExist() {
 		// Session exists, just restore PTY connection to it
-		if err := i.tmuxSession.Restore(); err != nil {
+		if err := i.session.Restore(); err != nil {
 			log.ErrorLog.Print(err)
 			// If restore fails, fall back to creating new session
-			if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath()); err != nil {
+			if err := i.session.Start(i.gitWorktree.GetWorktreePath()); err != nil {
 				log.ErrorLog.Print(err)
-				// Cleanup git worktree if tmux session creation fails
+				// Cleanup git worktree if session creation fails
 				if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
 					err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
 					log.ErrorLog.Print(err)
@@ -464,10 +507,10 @@ func (i *Instance) Resume() error {
 			}
 		}
 	} else {
-		// Create new tmux session
-		if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath()); err != nil {
+		// Create new session
+		if err := i.session.Start(i.gitWorktree.GetWorktreePath()); err != nil {
 			log.ErrorLog.Print(err)
-			// Cleanup git worktree if tmux session creation fails
+			// Cleanup git worktree if session creation fails
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
 				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
 				log.ErrorLog.Print(err)
@@ -511,44 +554,49 @@ func (i *Instance) GetDiffStats() *git.DiffStats {
 	return i.diffStats
 }
 
-// SendPrompt sends a prompt to the tmux session
+// SendPrompt sends a prompt to the session
 func (i *Instance) SendPrompt(prompt string) error {
 	if !i.started {
 		return fmt.Errorf("instance not started")
 	}
-	if i.tmuxSession == nil {
-		return fmt.Errorf("tmux session not initialized")
+	if i.session == nil {
+		return fmt.Errorf("session not initialized")
 	}
-	if err := i.tmuxSession.SendKeys(prompt); err != nil {
-		return fmt.Errorf("error sending keys to tmux session: %w", err)
+	if err := i.session.SendKeys(prompt); err != nil {
+		return fmt.Errorf("error sending keys to session: %w", err)
 	}
 
 	// Brief pause to prevent carriage return from being interpreted as newline
 	time.Sleep(100 * time.Millisecond)
-	if err := i.tmuxSession.TapEnter(); err != nil {
+	if err := i.session.TapEnter(); err != nil {
 		return fmt.Errorf("error tapping enter: %w", err)
 	}
 
 	return nil
 }
 
-// PreviewFullHistory captures the entire tmux pane output including full scrollback history
+// PreviewFullHistory captures the entire pane output including full scrollback history
 func (i *Instance) PreviewFullHistory() (string, error) {
 	if !i.started || i.Status == Paused {
 		return "", nil
 	}
-	return i.tmuxSession.CapturePaneContentWithOptions("-", "-")
+	return i.session.CapturePaneContentWithOptions("-", "-")
 }
 
-// SetTmuxSession sets the tmux session for testing purposes
-func (i *Instance) SetTmuxSession(session *tmux.TmuxSession) {
-	i.tmuxSession = session
+// SetSession sets the multiplexer session for testing purposes
+func (i *Instance) SetSession(session Multiplexer) {
+	i.session = session
 }
 
-// SendKeys sends keys to the tmux session
+// SendKeys sends keys to the session
 func (i *Instance) SendKeys(keys string) error {
 	if !i.started || i.Status == Paused {
 		return fmt.Errorf("cannot send keys to instance that has not been started or is paused")
 	}
-	return i.tmuxSession.SendKeys(keys)
+	return i.session.SendKeys(keys)
+}
+
+// GetMultiplexerType returns the type of multiplexer used for this instance
+func (i *Instance) GetMultiplexerType() MultiplexerType {
+	return i.multiplexerType
 }

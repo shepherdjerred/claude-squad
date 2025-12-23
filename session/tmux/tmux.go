@@ -192,6 +192,11 @@ func (t *TmuxSession) Start(workDir string) error {
 
 // Restore attaches to an existing session and restores the window size
 func (t *TmuxSession) Restore() error {
+	// Check if session exists before trying to attach
+	if !t.DoesSessionExist() {
+		return fmt.Errorf("tmux session does not exist: %s", t.sanitizedName)
+	}
+
 	ptmx, err := t.ptyFactory.Start(exec.Command("tmux", "attach-session", "-t", t.sanitizedName))
 	if err != nil {
 		return fmt.Errorf("error opening PTY: %w", err)
@@ -210,11 +215,11 @@ func newStatusMonitor() *statusMonitor {
 	return &statusMonitor{}
 }
 
-// hash hashes the string.
+// hash hashes the string without allocating a byte slice.
+// Uses io.WriteString which writes directly from the string's backing array.
 func (m *statusMonitor) hash(s string) []byte {
 	h := sha256.New()
-	// TODO: this allocation sucks since the string is probably large. Ideally, we hash the string directly.
-	h.Write([]byte(s))
+	io.WriteString(h, s)
 	return h.Sum(nil)
 }
 
@@ -470,6 +475,17 @@ func (t *TmuxSession) DoesSessionExist() bool {
 	// Using "-t name" does a prefix match, which is wrong. `-t=` does an exact match.
 	existsCmd := exec.Command("tmux", "has-session", fmt.Sprintf("-t=%s", t.sanitizedName))
 	return t.cmdExec.Run(existsCmd) == nil
+}
+
+// GetProgram returns the program being run in this session.
+func (t *TmuxSession) GetProgram() string {
+	return t.program
+}
+
+// IsAvailable checks if tmux is available on the system.
+func IsAvailable() bool {
+	cmd := exec.Command("tmux", "-V")
+	return cmd.Run() == nil
 }
 
 // CapturePaneContent captures the content of the tmux pane

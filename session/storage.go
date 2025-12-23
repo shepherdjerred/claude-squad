@@ -2,6 +2,7 @@ package session
 
 import (
 	"claude-squad/config"
+	"claude-squad/log"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -19,9 +20,10 @@ type InstanceData struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	AutoYes   bool      `json:"auto_yes"`
 
-	Program   string          `json:"program"`
-	Worktree  GitWorktreeData `json:"worktree"`
-	DiffStats DiffStatsData   `json:"diff_stats"`
+	Program     string          `json:"program"`
+	Multiplexer string          `json:"multiplexer"`
+	Worktree    GitWorktreeData `json:"worktree"`
+	DiffStats   DiffStatsData   `json:"diff_stats"`
 }
 
 // GitWorktreeData represents the serializable data of a GitWorktree
@@ -71,7 +73,9 @@ func (s *Storage) SaveInstances(instances []*Instance) error {
 	return s.state.SaveInstances(jsonData)
 }
 
-// LoadInstances loads the list of instances from disk
+// LoadInstances loads the list of instances from disk.
+// Invalid instances (e.g., those whose multiplexer sessions no longer exist)
+// are automatically filtered out and the cleaned state is saved back to disk.
 func (s *Storage) LoadInstances() ([]*Instance, error) {
 	jsonData := s.state.GetInstances()
 
@@ -80,13 +84,25 @@ func (s *Storage) LoadInstances() ([]*Instance, error) {
 		return nil, fmt.Errorf("failed to unmarshal instances: %w", err)
 	}
 
-	instances := make([]*Instance, len(instancesData))
-	for i, data := range instancesData {
+	instances := make([]*Instance, 0, len(instancesData))
+	skippedCount := 0
+	for _, data := range instancesData {
 		instance, err := FromInstanceData(data)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create instance %s: %w", data.Title, err)
+			// Log warning and skip this instance instead of failing
+			log.WarningLog.Printf("Skipping invalid instance %q: %v", data.Title, err)
+			skippedCount++
+			continue
 		}
-		instances[i] = instance
+		instances = append(instances, instance)
+	}
+
+	// If any instances were filtered out, save the cleaned state
+	if skippedCount > 0 {
+		log.InfoLog.Printf("Removed %d invalid instance(s) from state", skippedCount)
+		if err := s.SaveInstances(instances); err != nil {
+			log.WarningLog.Printf("Failed to save cleaned state: %v", err)
+		}
 	}
 
 	return instances, nil

@@ -52,6 +52,10 @@ var autoYesStyle = lipgloss.NewStyle().
 	Background(lipgloss.Color("#dde4f0")).
 	Foreground(lipgloss.Color("#1a1a1a"))
 
+var muxTagStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#666666"}).
+	Italic(true)
+
 type List struct {
 	items         []*session.Instance
 	selectedIdx   int
@@ -137,15 +141,25 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 	default:
 	}
 
-	// Cut the title if it's too long
+	// Get multiplexer type tag
+	muxTag := ""
+	if mtype := i.GetMultiplexerType(); mtype != "" {
+		muxTag = fmt.Sprintf(" [%s]", mtype)
+	}
+
+	// Cut the title if it's too long (account for mux tag)
 	titleText := i.Title
-	widthAvail := r.width - 3 - len(prefix) - 1
+	widthAvail := r.width - 3 - len(prefix) - 1 - len(muxTag)
 	if widthAvail > 0 && widthAvail < len(titleText) && len(titleText) >= widthAvail-3 {
 		titleText = titleText[:widthAvail-3] + "..."
 	}
+
+	// Build title with multiplexer tag
+	titleWithMux := titleText + muxTagStyle.Render(muxTag)
+
 	title := titleS.Render(lipgloss.JoinHorizontal(
 		lipgloss.Left,
-		lipgloss.Place(r.width-3, 1, lipgloss.Left, lipgloss.Center, fmt.Sprintf("%s %s", prefix, titleText)),
+		lipgloss.Place(r.width-3, 1, lipgloss.Left, lipgloss.Center, fmt.Sprintf("%s %s", prefix, titleWithMux)),
 		" ",
 		join,
 	))

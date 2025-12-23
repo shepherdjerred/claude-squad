@@ -14,6 +14,8 @@ import (
 
 // Setup creates a new worktree for the session
 func (g *GitWorktree) Setup() error {
+	g.reportProgress("Preparing worktree directory...")
+
 	// Ensure worktrees directory exists early (can be done in parallel with branch check)
 	worktreesDir, err := getWorktreeDirectory()
 	if err != nil {
@@ -52,8 +54,10 @@ func (g *GitWorktree) Setup() error {
 	}
 
 	if branchExists {
+		g.reportProgress(fmt.Sprintf("Setting up worktree from existing branch '%s'...", g.branchName))
 		return g.setupFromExistingBranch()
 	}
+	g.reportProgress(fmt.Sprintf("Creating new worktree with branch '%s'...", g.branchName))
 	return g.setupNewWorktree()
 }
 
@@ -62,13 +66,16 @@ func (g *GitWorktree) setupFromExistingBranch() error {
 	// Directory already created in Setup(), skip duplicate creation
 
 	// Clean up any existing worktree first
+	g.reportProgress("Cleaning up existing worktree...")
 	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath) // Ignore error if worktree doesn't exist
 
 	// Create a new worktree from the existing branch
+	g.reportProgress("Creating worktree...")
 	if _, err := g.runGitCommand(g.repoPath, "worktree", "add", g.worktreePath, g.branchName); err != nil {
 		return fmt.Errorf("failed to create worktree from branch %s: %w", g.branchName, err)
 	}
 
+	g.reportProgress("Worktree ready")
 	return nil
 }
 
@@ -81,9 +88,11 @@ func (g *GitWorktree) setupNewWorktree() error {
 	}
 
 	// Clean up any existing worktree first
+	g.reportProgress("Cleaning up existing worktree...")
 	_, _ = g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath) // Ignore error if worktree doesn't exist
 
 	// Open the repository
+	g.reportProgress("Opening repository...")
 	repo, err := git.PlainOpen(g.repoPath)
 	if err != nil {
 		return fmt.Errorf("failed to open repository: %w", err)
@@ -94,6 +103,7 @@ func (g *GitWorktree) setupNewWorktree() error {
 		return fmt.Errorf("failed to cleanup existing branch: %w", err)
 	}
 
+	g.reportProgress("Getting HEAD commit...")
 	output, err := g.runGitCommand(g.repoPath, "rev-parse", "HEAD")
 	if err != nil {
 		if strings.Contains(err.Error(), "fatal: ambiguous argument 'HEAD'") ||
@@ -110,10 +120,12 @@ func (g *GitWorktree) setupNewWorktree() error {
 	// Otherwise, we'll inherit uncommitted changes from the previous worktree.
 	// This way, we can start the worktree with a clean slate.
 	// TODO: we might want to give an option to use main/master instead of the current branch.
+	g.reportProgress("Creating worktree...")
 	if _, err := g.runGitCommand(g.repoPath, "worktree", "add", "-b", g.branchName, g.worktreePath, headCommit); err != nil {
 		return fmt.Errorf("failed to create worktree from commit %s: %w", headCommit, err)
 	}
 
+	g.reportProgress("Worktree ready")
 	return nil
 }
 

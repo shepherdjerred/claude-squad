@@ -17,6 +17,9 @@ func getWorktreeDirectory() (string, error) {
 	return filepath.Join(configDir, "worktrees"), nil
 }
 
+// ProgressCallback is called with status messages during setup
+type ProgressCallback func(message string)
+
 // GitWorktree manages git worktree operations for a session
 type GitWorktree struct {
 	// Path to the repository
@@ -29,6 +32,8 @@ type GitWorktree struct {
 	branchName string
 	// Base commit hash for the worktree
 	baseCommitSHA string
+	// Progress callback for status updates
+	progressCallback ProgressCallback
 }
 
 func NewGitWorktreeFromStorage(repoPath string, worktreePath string, sessionName string, branchName string, baseCommitSHA string) *GitWorktree {
@@ -102,4 +107,16 @@ func (g *GitWorktree) GetRepoName() string {
 // GetBaseCommitSHA returns the base commit SHA for the worktree
 func (g *GitWorktree) GetBaseCommitSHA() string {
 	return g.baseCommitSHA
+}
+
+// SetProgressCallback sets the callback function for progress updates
+func (g *GitWorktree) SetProgressCallback(callback ProgressCallback) {
+	g.progressCallback = callback
+}
+
+// reportProgress safely calls the progress callback if set
+func (g *GitWorktree) reportProgress(message string) {
+	if g.progressCallback != nil {
+		g.progressCallback(message)
+	}
 }

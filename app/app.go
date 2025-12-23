@@ -42,6 +42,8 @@ const (
 	stateHelp
 	// stateConfirm is the state when a confirmation modal is displayed.
 	stateConfirm
+	// stateLoading is the state when a loading operation is in progress.
+	stateLoading
 )
 
 type home struct {
@@ -91,6 +93,8 @@ type home struct {
 	textOverlay *overlay.TextOverlay
 	// confirmationOverlay displays confirmation modals
 	confirmationOverlay *overlay.ConfirmationOverlay
+	// loadingOverlay displays loading progress
+	loadingOverlay *overlay.LoadingOverlay
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
@@ -200,25 +204,72 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.menu.ClearKeydown()
 		return m, nil
 	case tickUpdateMetadataMessage:
-		for _, instance := range m.list.GetInstances() {
-			if !instance.Started() || instance.Paused() {
+		instances := m.list.GetInstances()
+
+		// Parallel update check - runs HasUpdated() concurrently
+		updateResults := session.ParallelUpdate(instances)
+		for _, result := range updateResults {
+			if result.Instance == nil {
 				continue
 			}
-			updated, prompt := instance.HasUpdated()
-			if updated {
-				instance.SetStatus(session.Running)
+			if result.Updated {
+				result.Instance.SetStatus(session.Running)
 			} else {
-				if prompt {
-					instance.TapEnter()
+				if result.HasPrompt {
+					result.Instance.TapEnter()
 				} else {
-					instance.SetStatus(session.Ready)
+					result.Instance.SetStatus(session.Ready)
 				}
 			}
-			if err := instance.UpdateDiffStats(); err != nil {
+		}
+
+		// Parallel diff stats update
+		diffErrors := session.ParallelUpdateDiffStats(instances)
+		for i, err := range diffErrors {
+			if err != nil && instances[i] != nil {
 				log.WarningLog.Printf("could not update diff stats: %v", err)
 			}
 		}
+
 		return m, tickUpdateMetadataCmd
+	case loadingProgressMsg:
+		if m.loadingOverlay != nil {
+			m.loadingOverlay.SetStatus(msg.status)
+		}
+		return m, nil
+	case loadingCompleteMsg:
+		m.loadingOverlay = nil
+		if msg.err != nil {
+			m.list.Kill()
+			m.state = stateDefault
+			return m, m.handleError(msg.err)
+		}
+		// Instance started successfully
+		instance := m.list.GetInstances()[m.list.NumInstances()-1]
+		// Save after adding new instance
+		if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+			return m, m.handleError(err)
+		}
+		// Instance added successfully, call the finalizer.
+		m.newInstanceFinalizer()
+		if m.autoYes {
+			instance.AutoYes = true
+		}
+
+		m.newInstanceFinalizer()
+		m.state = stateDefault
+		if m.promptAfterName {
+			m.state = statePrompt
+			m.menu.SetState(ui.StatePrompt)
+			// Initialize the text input overlay
+			m.textInputOverlay = overlay.NewTextInputOverlay("Enter prompt", "")
+			m.promptAfterName = false
+		} else {
+			m.menu.SetState(ui.StateDefault)
+			m.showHelpScreen(helpStart(instance), nil)
+		}
+
+		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case tea.MouseMsg:
 		// Handle mouse wheel events for scrolling the diff/preview pane
 		if msg.Action == tea.MouseActionPress {
@@ -330,35 +381,14 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				return m, m.handleError(fmt.Errorf("title cannot be empty"))
 			}
 
-			if err := instance.Start(true); err != nil {
-				m.list.Kill()
-				m.state = stateDefault
-				return m, m.handleError(err)
-			}
-			// Save after adding new instance
-			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
-				return m, m.handleError(err)
-			}
-			// Instance added successfully, call the finalizer.
-			m.newInstanceFinalizer()
-			if m.autoYes {
-				instance.AutoYes = true
-			}
+			// Show loading overlay and start instance in background
+			m.loadingOverlay = overlay.NewLoadingOverlay("Creating Instance", &m.spinner)
+			m.loadingOverlay.SetWidth(50)
+			m.loadingOverlay.SetStatus("Initializing...")
+			m.state = stateLoading
 
-			m.newInstanceFinalizer()
-			m.state = stateDefault
-			if m.promptAfterName {
-				m.state = statePrompt
-				m.menu.SetState(ui.StatePrompt)
-				// Initialize the text input overlay
-				m.textInputOverlay = overlay.NewTextInputOverlay("Enter prompt", "")
-				m.promptAfterName = false
-			} else {
-				m.menu.SetState(ui.StateDefault)
-				m.showHelpScreen(helpStart(instance), nil)
-			}
-
-			return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+			// Start instance in a goroutine and send progress messages
+			return m, m.startInstanceAsync(instance)
 		case tea.KeyRunes:
 			if len(instance.Title) >= 32 {
 				return m, m.handleError(fmt.Errorf("title cannot be longer than 32 characters"))
@@ -472,9 +502,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
 		instance, err := session.NewInstance(session.InstanceOptions{
-			Title:   "",
-			Path:    ".",
-			Program: m.program,
+			Title:       "",
+			Path:        ".",
+			Program:     m.program,
+			Multiplexer: m.appConfig.Multiplexer,
 		})
 		if err != nil {
 			return m, m.handleError(err)
@@ -493,9 +524,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
 		instance, err := session.NewInstance(session.InstanceOptions{
-			Title:   "",
-			Path:    ".",
-			Program: m.program,
+			Title:       "",
+			Path:        ".",
+			Program:     m.program,
+			Multiplexer: m.appConfig.Multiplexer,
 		})
 		if err != nil {
 			return m, m.handleError(err)
@@ -610,7 +642,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Paused() || !selected.TmuxAlive() {
+		if selected == nil || selected.Paused() || !selected.SessionAlive() {
 			return m, nil
 		}
 		// Show help screen before attaching
@@ -672,6 +704,16 @@ type tickUpdateMetadataMessage struct{}
 
 type instanceChangedMsg struct{}
 
+// loadingProgressMsg is sent when there's a progress update during loading
+type loadingProgressMsg struct {
+	status string
+}
+
+// loadingCompleteMsg is sent when the loading operation completes
+type loadingCompleteMsg struct {
+	err error
+}
+
 // tickUpdateMetadataCmd is the callback to update the metadata of the instances every 500ms. Note that we iterate
 // overall the instances and capture their output. It's a pretty expensive operation. Let's do it 2x a second only.
 var tickUpdateMetadataCmd = func() tea.Msg {
@@ -691,6 +733,22 @@ func (m *home) handleError(err error) tea.Cmd {
 		}
 
 		return hideErrMsg{}
+	}
+}
+
+// startInstanceAsync starts an instance in a goroutine and returns a tea.Cmd that
+// sends a completion message when done.
+func (m *home) startInstanceAsync(instance *session.Instance) tea.Cmd {
+	return func() tea.Msg {
+		// Start the instance with a progress callback that updates the overlay
+		// Note: Progress updates happen synchronously during Start(), so we can
+		// update the overlay directly via the callback
+		err := instance.StartWithProgress(true, func(status string) {
+			if m.loadingOverlay != nil {
+				m.loadingOverlay.SetStatus(status)
+			}
+		})
+		return loadingCompleteMsg{err: err}
 	}
 }
 
@@ -746,6 +804,11 @@ func (m *home) View() string {
 			log.ErrorLog.Printf("confirmation overlay is nil")
 		}
 		return overlay.PlaceOverlay(0, 0, m.confirmationOverlay.Render(), mainView, true, true)
+	} else if m.state == stateLoading {
+		if m.loadingOverlay == nil {
+			log.ErrorLog.Printf("loading overlay is nil")
+		}
+		return overlay.PlaceOverlay(0, 0, m.loadingOverlay.Render(), mainView, true, true)
 	}
 
 	return mainView

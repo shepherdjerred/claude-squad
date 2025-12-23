@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -49,9 +50,11 @@ func Close() {
 }
 
 // Every is used to log at most once every timeout duration.
+// Uses time comparison instead of timers to avoid allocations.
 type Every struct {
-	timeout time.Duration
-	timer   *time.Timer
+	timeout    time.Duration
+	lastLogged time.Time
+	mu         sync.Mutex
 }
 
 func NewEvery(timeout time.Duration) *Every {
@@ -60,17 +63,13 @@ func NewEvery(timeout time.Duration) *Every {
 
 // ShouldLog returns true if the timeout has passed since the last log.
 func (e *Every) ShouldLog() bool {
-	if e.timer == nil {
-		e.timer = time.NewTimer(e.timeout)
-		e.timer.Reset(e.timeout)
-		return true
-	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
-	select {
-	case <-e.timer.C:
-		e.timer.Reset(e.timeout)
+	now := time.Now()
+	if e.lastLogged.IsZero() || now.Sub(e.lastLogged) >= e.timeout {
+		e.lastLogged = now
 		return true
-	default:
-		return false
 	}
+	return false
 }
