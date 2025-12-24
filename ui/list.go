@@ -1,11 +1,12 @@
 package ui
 
 import (
-	"claude-squad/log"
-	"claude-squad/session"
 	"errors"
 	"fmt"
 	"strings"
+
+	"claude-squad/log"
+	"claude-squad/session"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/lipgloss"
@@ -56,6 +57,14 @@ var muxTagStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#666666"}).
 	Italic(true)
 
+var summaryStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#666666", Dark: "#888888"}).
+	Italic(true)
+
+var selectedSummaryStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#444444", Dark: "#444444"}).
+	Italic(true)
+
 type List struct {
 	items         []*session.Instance
 	selectedIdx   int
@@ -66,6 +75,9 @@ type List struct {
 	// map of repo name to number of instances using it. Used to display the repo name only if there are
 	// multiple repos in play.
 	repos map[string]int
+
+	// showArchived controls whether to show archived or active instances
+	showArchived bool
 }
 
 func NewList(spinner *spinner.Model, autoYes bool) *List {
@@ -101,6 +113,11 @@ func (l *List) SetSessionPreviewSize(width, height int) (err error) {
 }
 
 func (l *List) NumInstances() int {
+	return len(l.GetVisibleInstances())
+}
+
+// NumAllInstances returns the total count of all instances (both archived and active)
+func (l *List) NumAllInstances() int {
 	return len(l.items)
 }
 
@@ -226,18 +243,53 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 
 	branchLine := fmt.Sprintf("%s %s-%s%s%s", strings.Repeat(" ", len(prefix)), branchIcon, branch, spaces, diff)
 
-	// join title and subtitle
-	text := lipgloss.JoinVertical(
-		lipgloss.Left,
-		title,
-		descS.Render(branchLine),
-	)
+	// Build summary line if available
+	var summaryLine string
+	if i.Summary != "" {
+		summaryText := i.Summary
+		// Truncate summary if too long
+		maxSummaryWidth := r.width - len(prefix) - 2
+		if maxSummaryWidth > 0 && len(summaryText) > maxSummaryWidth {
+			if maxSummaryWidth > 3 {
+				summaryText = summaryText[:maxSummaryWidth-3] + "..."
+			} else {
+				summaryText = ""
+			}
+		}
+		if summaryText != "" {
+			sumStyle := summaryStyle
+			if selected {
+				sumStyle = selectedSummaryStyle.Background(descS.GetBackground())
+			}
+			summaryLine = fmt.Sprintf("%s %s", strings.Repeat(" ", len(prefix)), sumStyle.Render(summaryText))
+		}
+	}
+
+	// join title, subtitle, and summary
+	var text string
+	if summaryLine != "" {
+		text = lipgloss.JoinVertical(
+			lipgloss.Left,
+			title,
+			descS.Render(branchLine),
+			descS.Render(summaryLine),
+		)
+	} else {
+		text = lipgloss.JoinVertical(
+			lipgloss.Left,
+			title,
+			descS.Render(branchLine),
+		)
+	}
 
 	return text
 }
 
 func (l *List) String() string {
-	const titleText = " Instances "
+	titleText := " Instances "
+	if l.showArchived {
+		titleText = " Archived "
+	}
 	const autoYesText = " auto-yes "
 
 	// Write the title.
@@ -263,44 +315,55 @@ func (l *List) String() string {
 	b.WriteString("\n")
 	b.WriteString("\n")
 
+	// Get visible instances based on archive view mode
+	visibleItems := l.GetVisibleInstances()
+
 	// Render the list.
-	for i, item := range l.items {
+	for i, item := range visibleItems {
 		b.WriteString(l.renderer.Render(item, i+1, i == l.selectedIdx, len(l.repos) > 1))
-		if i != len(l.items)-1 {
+		if i != len(visibleItems)-1 {
 			b.WriteString("\n\n")
 		}
 	}
 	return lipgloss.Place(l.width, l.height, lipgloss.Left, lipgloss.Top, b.String())
 }
 
-// Down selects the next item in the list.
+// Down selects the next item in the list. Wraps to the first item if at the end.
 func (l *List) Down() {
-	if len(l.items) == 0 {
+	visibleItems := l.GetVisibleInstances()
+	if len(visibleItems) == 0 {
 		return
 	}
-	if l.selectedIdx < len(l.items)-1 {
+	if l.selectedIdx < len(visibleItems)-1 {
 		l.selectedIdx++
+	} else {
+		l.selectedIdx = 0
 	}
 }
 
-// Kill selects the next item in the list.
+// Kill removes the selected instance from the list and kills it asynchronously.
 func (l *List) Kill() {
-	if len(l.items) == 0 {
+	visibleItems := l.GetVisibleInstances()
+	if len(visibleItems) == 0 {
 		return
 	}
-	targetInstance := l.items[l.selectedIdx]
+	targetInstance := visibleItems[l.selectedIdx]
 
-	// Kill the tmux session
-	if err := targetInstance.Kill(); err != nil {
-		log.ErrorLog.Printf("could not kill instance: %v", err)
+	// Find the actual index in the full items list
+	actualIdx := -1
+	for i, item := range l.items {
+		if item == targetInstance {
+			actualIdx = i
+			break
+		}
 	}
 
-	// If you delete the last one in the list, select the previous one.
-	if l.selectedIdx == len(l.items)-1 {
-		defer l.Up()
+	if actualIdx == -1 {
+		log.ErrorLog.Printf("could not find instance in items list")
+		return
 	}
 
-	// Unregister the reponame.
+	// Unregister the reponame first (before removing from list).
 	repoName, err := targetInstance.RepoName()
 	if err != nil {
 		log.ErrorLog.Printf("could not get repo name: %v", err)
@@ -308,33 +371,73 @@ func (l *List) Kill() {
 		l.rmRepo(repoName)
 	}
 
-	// Since there's items after this, the selectedIdx can stay the same.
-	l.items = append(l.items[:l.selectedIdx], l.items[l.selectedIdx+1:]...)
+	// If you delete the last one in the visible list, select the previous one.
+	if l.selectedIdx == len(visibleItems)-1 {
+		defer l.Up()
+	}
+
+	// Remove from the actual items list immediately.
+	l.items = append(l.items[:actualIdx], l.items[actualIdx+1:]...)
+
+	// Kill the tmux/zellij session and git worktree asynchronously to avoid blocking the UI.
+	go func() {
+		if err := targetInstance.Kill(); err != nil {
+			log.ErrorLog.Printf("could not kill instance: %v", err)
+		}
+	}()
 }
 
 func (l *List) Attach() (chan struct{}, error) {
-	targetInstance := l.items[l.selectedIdx]
+	visibleItems := l.GetVisibleInstances()
+	if len(visibleItems) == 0 || l.selectedIdx >= len(visibleItems) {
+		return nil, fmt.Errorf("no instance selected")
+	}
+	targetInstance := visibleItems[l.selectedIdx]
 	return targetInstance.Attach()
 }
 
-// Up selects the prev item in the list.
+// Up selects the prev item in the list. Wraps to the last item if at the beginning.
 func (l *List) Up() {
-	if len(l.items) == 0 {
+	visibleItems := l.GetVisibleInstances()
+	if len(visibleItems) == 0 {
 		return
 	}
 	if l.selectedIdx > 0 {
 		l.selectedIdx--
+	} else {
+		l.selectedIdx = len(l.items) - 1
 	}
 }
 
 // MoveUp moves the selected instance up in the list (swaps with previous).
 // Returns true if the instance was moved, false otherwise.
 func (l *List) MoveUp() bool {
-	if len(l.items) <= 1 || l.selectedIdx <= 0 {
+	visibleItems := l.GetVisibleInstances()
+	if len(visibleItems) <= 1 || l.selectedIdx <= 0 {
 		return false
 	}
-	// Swap with previous item
-	l.items[l.selectedIdx], l.items[l.selectedIdx-1] = l.items[l.selectedIdx-1], l.items[l.selectedIdx]
+
+	// Get the actual indices in the full items list
+	currentItem := visibleItems[l.selectedIdx]
+	prevItem := visibleItems[l.selectedIdx-1]
+
+	currentIdx := -1
+	prevIdx := -1
+	for i, item := range l.items {
+		if item == currentItem {
+			currentIdx = i
+		}
+		if item == prevItem {
+			prevIdx = i
+		}
+	}
+
+	if currentIdx == -1 || prevIdx == -1 {
+		return false
+	}
+
+	// Swap in the full list
+	l.items[currentIdx], l.items[prevIdx] = l.items[prevIdx], l.items[currentIdx]
 	l.selectedIdx--
 	return true
 }
@@ -342,11 +445,32 @@ func (l *List) MoveUp() bool {
 // MoveDown moves the selected instance down in the list (swaps with next).
 // Returns true if the instance was moved, false otherwise.
 func (l *List) MoveDown() bool {
-	if len(l.items) <= 1 || l.selectedIdx >= len(l.items)-1 {
+	visibleItems := l.GetVisibleInstances()
+	if len(visibleItems) <= 1 || l.selectedIdx >= len(visibleItems)-1 {
 		return false
 	}
-	// Swap with next item
-	l.items[l.selectedIdx], l.items[l.selectedIdx+1] = l.items[l.selectedIdx+1], l.items[l.selectedIdx]
+
+	// Get the actual indices in the full items list
+	currentItem := visibleItems[l.selectedIdx]
+	nextItem := visibleItems[l.selectedIdx+1]
+
+	currentIdx := -1
+	nextIdx := -1
+	for i, item := range l.items {
+		if item == currentItem {
+			currentIdx = i
+		}
+		if item == nextItem {
+			nextIdx = i
+		}
+	}
+
+	if currentIdx == -1 || nextIdx == -1 {
+		return false
+	}
+
+	// Swap in the full list
+	l.items[currentIdx], l.items[nextIdx] = l.items[nextIdx], l.items[currentIdx]
 	l.selectedIdx++
 	return true
 }
@@ -386,25 +510,58 @@ func (l *List) AddInstance(instance *session.Instance) (finalize func()) {
 	}
 }
 
-// GetSelectedInstance returns the currently selected instance
+// GetSelectedInstance returns the currently selected instance from visible instances
 func (l *List) GetSelectedInstance() *session.Instance {
-	if len(l.items) == 0 {
+	visibleItems := l.GetVisibleInstances()
+	if len(visibleItems) == 0 || l.selectedIdx >= len(visibleItems) {
 		return nil
 	}
-	return l.items[l.selectedIdx]
+	return visibleItems[l.selectedIdx]
 }
 
 // SetSelectedInstance sets the selected index. Noop if the index is out of bounds.
 func (l *List) SetSelectedInstance(idx int) {
-	if idx >= len(l.items) {
+	visibleItems := l.GetVisibleInstances()
+	if idx >= len(visibleItems) {
 		return
 	}
 	l.selectedIdx = idx
 }
 
+// RemoveSelectedFromView adjusts the selection after archiving/unarchiving
+// This doesn't remove the instance, just adjusts the view
+func (l *List) RemoveSelectedFromView() {
+	visibleItems := l.GetVisibleInstances()
+	if l.selectedIdx >= len(visibleItems)-1 && l.selectedIdx > 0 {
+		l.selectedIdx--
+	}
+}
+
 // GetInstances returns all instances in the list
 func (l *List) GetInstances() []*session.Instance {
 	return l.items
+}
+
+// GetVisibleInstances returns instances based on the current view mode (archived or active)
+func (l *List) GetVisibleInstances() []*session.Instance {
+	var visible []*session.Instance
+	for _, item := range l.items {
+		if item.Archived == l.showArchived {
+			visible = append(visible, item)
+		}
+	}
+	return visible
+}
+
+// ToggleArchiveView toggles between showing archived and active instances
+func (l *List) ToggleArchiveView() {
+	l.showArchived = !l.showArchived
+	l.selectedIdx = 0 // Reset selection when toggling
+}
+
+// ShowingArchived returns true if currently showing archived instances
+func (l *List) ShowingArchived() bool {
+	return l.showArchived
 }
 
 // MergeInstances merges instances loaded from disk with the current in-memory instances.

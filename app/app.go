@@ -44,6 +44,8 @@ const (
 	stateConfirm
 	// stateLoading is the state when a loading operation is in progress.
 	stateLoading
+	// stateRename is the state when the user is renaming an instance.
+	stateRename
 )
 
 type home struct {
@@ -95,6 +97,11 @@ type home struct {
 	confirmationOverlay *overlay.ConfirmationOverlay
 	// loadingOverlay displays loading progress
 	loadingOverlay *overlay.LoadingOverlay
+
+	// -- Background Services --
+
+	// summarizer handles generating AI summaries for instances
+	summarizer *session.Summarizer
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
@@ -123,6 +130,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		autoYes:      autoYes,
 		state:        stateDefault,
 		appState:     appState,
+		summarizer:   session.NewSummarizer(),
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
 
@@ -184,6 +192,7 @@ func (m *home) Init() tea.Cmd {
 			return previewTickMsg{}
 		},
 		tickUpdateMetadataCmd,
+		tickUpdateSummaryCmd,
 	)
 }
 
@@ -253,6 +262,13 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, tickUpdateMetadataCmd
+	case tickUpdateSummaryMessage:
+		// Update the next instance's summary (staggered)
+		instances := m.list.GetInstances()
+		if updated := m.summarizer.UpdateNextSummary(instances); updated != nil {
+			log.InfoLog.Printf("Updated summary for %s: %s", updated.Title, updated.Summary)
+		}
+		return m, tickUpdateSummaryCmd
 	case loadingProgressMsg:
 		if m.loadingOverlay != nil {
 			m.loadingOverlay.SetStatus(msg.status)
@@ -465,6 +481,50 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 
 		return m, nil
+	} else if m.state == stateRename {
+		// Use the TextInputOverlay component to handle key events for renaming
+		shouldClose := m.textInputOverlay.HandleKeyPress(msg)
+
+		// Check if the form was submitted or canceled
+		if shouldClose {
+			selected := m.list.GetSelectedInstance()
+			if selected == nil {
+				m.textInputOverlay = nil
+				m.state = stateDefault
+				m.menu.SetState(ui.StateDefault)
+				return m, nil
+			}
+			if m.textInputOverlay.IsSubmitted() {
+				newTitle := m.textInputOverlay.GetValue()
+				if err := selected.Rename(newTitle); err != nil {
+					m.textInputOverlay = nil
+					m.state = stateDefault
+					m.menu.SetState(ui.StateDefault)
+					return m, m.handleError(err)
+				}
+				// Save the updated instance
+				if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+					m.textInputOverlay = nil
+					m.state = stateDefault
+					m.menu.SetState(ui.StateDefault)
+					return m, m.handleError(err)
+				}
+			}
+
+			// Close the overlay and reset state
+			m.textInputOverlay = nil
+			m.state = stateDefault
+			return m, tea.Batch(
+				tea.WindowSize(),
+				func() tea.Msg {
+					m.menu.SetState(ui.StateDefault)
+					return nil
+				},
+				m.instanceChanged(),
+			)
+		}
+
+		return m, nil
 	}
 
 	// Handle confirmation state
@@ -574,6 +634,48 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, tea.Batch(highlightCmd, m.instanceChanged(), m.requestSave())
 		}
 		return m, tea.Batch(highlightCmd, m.instanceChanged())
+	case keys.KeyToggleArchive:
+		m.list.ToggleArchiveView()
+		m.menu.SetShowingArchived(m.list.ShowingArchived())
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
+	case keys.KeyArchive:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil {
+			return m, nil
+		}
+
+		// Determine action based on current view and instance state
+		if m.list.ShowingArchived() {
+			// In archived view - unarchive (restore) the instance
+			restoreAction := func() tea.Msg {
+				selected.Archived = false
+				if err := m.storage.UnarchiveInstance(selected.Title); err != nil {
+					return err
+				}
+				m.list.RemoveSelectedFromView()
+				return instanceChangedMsg{}
+			}
+			message := fmt.Sprintf("[!] Restore session '%s'?", selected.Title)
+			return m, m.confirmAction(message, restoreAction)
+		} else {
+			// In active view - archive the instance
+			archiveAction := func() tea.Msg {
+				// Pause the instance first if it's running
+				if !selected.Paused() {
+					if err := selected.Pause(); err != nil {
+						return err
+					}
+				}
+				selected.Archived = true
+				if err := m.storage.ArchiveInstance(selected.Title); err != nil {
+					return err
+				}
+				m.list.RemoveSelectedFromView()
+				return instanceChangedMsg{}
+			}
+			message := fmt.Sprintf("[!] Archive session '%s'?", selected.Title)
+			return m, m.confirmAction(message, archiveAction)
+		}
 	case keys.KeyTab:
 		m.tabbedWindow.Toggle()
 		m.menu.SetInDiffTab(m.tabbedWindow.IsInDiffTab())
@@ -679,6 +781,16 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			m.state = stateDefault
 		})
 		return m, nil
+	case keys.KeyRename:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil {
+			return m, nil
+		}
+		// Enter rename mode with the current title pre-filled
+		m.state = stateRename
+		m.menu.SetState(ui.StateRename)
+		m.textInputOverlay = overlay.NewTextInputOverlay("Rename instance", selected.Title)
+		return m, nil
 	default:
 		return m, nil
 	}
@@ -725,6 +837,8 @@ type previewTickMsg struct{}
 
 type tickUpdateMetadataMessage struct{}
 
+type tickUpdateSummaryMessage struct{}
+
 type instanceChangedMsg struct{}
 
 // saveDebounceMsg is sent after a debounce delay to trigger a save
@@ -748,6 +862,13 @@ type loadingCompleteMsg struct {
 var tickUpdateMetadataCmd = func() tea.Msg {
 	time.Sleep(2 * time.Second)
 	return tickUpdateMetadataMessage{}
+}
+
+// tickUpdateSummaryCmd is the callback to update instance summaries. This is staggered across instances
+// so we don't overwhelm the system with Claude CLI calls.
+var tickUpdateSummaryCmd = func() tea.Msg {
+	time.Sleep(session.SummaryRefreshInterval)
+	return tickUpdateSummaryMessage{}
 }
 
 // handleError handles all errors which get bubbled up to the app. sets the error message. We return a callback tea.Cmd that returns a hideErrMsg message
@@ -831,7 +952,7 @@ func (m *home) View() string {
 		m.errBox.String(),
 	)
 
-	if m.state == statePrompt {
+	if m.state == statePrompt || m.state == stateRename {
 		if m.textInputOverlay == nil {
 			log.ErrorLog.Printf("text input overlay is nil")
 		}

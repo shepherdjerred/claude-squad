@@ -19,11 +19,14 @@ type InstanceData struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	AutoYes   bool      `json:"auto_yes"`
+	Archived  bool      `json:"archived"`
 
-	Program     string          `json:"program"`
-	Multiplexer string          `json:"multiplexer"`
-	Worktree    GitWorktreeData `json:"worktree"`
-	DiffStats   DiffStatsData   `json:"diff_stats"`
+	Program          string          `json:"program"`
+	Multiplexer      string          `json:"multiplexer"`
+	Worktree         GitWorktreeData `json:"worktree"`
+	DiffStats        DiffStatsData   `json:"diff_stats"`
+	Summary          string          `json:"summary,omitempty"`
+	SummaryUpdatedAt time.Time       `json:"summary_updated_at,omitempty"`
 }
 
 // GitWorktreeData represents the serializable data of a GitWorktree
@@ -161,6 +164,47 @@ func (s *Storage) UpdateInstance(instance *Instance) error {
 // DeleteAllInstances removes all stored instances
 func (s *Storage) DeleteAllInstances() error {
 	return s.state.DeleteAllInstances()
+}
+
+// ArchiveInstance archives an instance by title
+func (s *Storage) ArchiveInstance(title string) error {
+	return s.setInstanceArchived(title, true)
+}
+
+// UnarchiveInstance unarchives an instance by title
+func (s *Storage) UnarchiveInstance(title string) error {
+	return s.setInstanceArchived(title, false)
+}
+
+// setInstanceArchived sets the archived state of an instance
+func (s *Storage) setInstanceArchived(title string, archived bool) error {
+	jsonData := s.state.GetInstances()
+
+	var instancesData []InstanceData
+	if err := json.Unmarshal(jsonData, &instancesData); err != nil {
+		return fmt.Errorf("failed to unmarshal instances: %w", err)
+	}
+
+	found := false
+	for i := range instancesData {
+		if instancesData[i].Title == title {
+			instancesData[i].Archived = archived
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("instance not found: %s", title)
+	}
+
+	// Marshal and save
+	jsonData, err := json.Marshal(instancesData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal instances: %w", err)
+	}
+
+	return s.state.SaveInstances(jsonData)
 }
 
 // StateSyncer is an optional interface for states that support sync from disk

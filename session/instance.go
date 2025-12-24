@@ -50,9 +50,16 @@ type Instance struct {
 	AutoYes bool
 	// Prompt is the initial prompt to pass to the instance on startup
 	Prompt string
+	// Archived is true if the instance has been archived (hidden but not deleted).
+	Archived bool
 
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
+
+	// Summary is a short AI-generated description of the current session state
+	Summary string
+	// SummaryUpdatedAt is when the summary was last updated
+	SummaryUpdatedAt time.Time
 
 	// The below fields are initialized upon calling Start().
 
@@ -68,17 +75,20 @@ type Instance struct {
 // ToInstanceData converts an Instance to its serializable form
 func (i *Instance) ToInstanceData() InstanceData {
 	data := InstanceData{
-		Title:      i.Title,
-		Path:       i.Path,
-		Branch:     i.Branch,
-		Status:     i.Status,
-		Height:     i.Height,
-		Width:      i.Width,
-		CreatedAt:  i.CreatedAt,
-		UpdatedAt:  time.Now(),
-		Program:    i.Program,
-		AutoYes:    i.AutoYes,
-		Multiplexer: string(i.multiplexerType),
+		Title:            i.Title,
+		Path:             i.Path,
+		Branch:           i.Branch,
+		Status:           i.Status,
+		Height:           i.Height,
+		Width:            i.Width,
+		CreatedAt:        i.CreatedAt,
+		UpdatedAt:        time.Now(),
+		Program:          i.Program,
+		AutoYes:          i.AutoYes,
+		Archived:         i.Archived,
+		Multiplexer:      string(i.multiplexerType),
+		Summary:          i.Summary,
+		SummaryUpdatedAt: i.SummaryUpdatedAt,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -113,16 +123,19 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 	}
 
 	instance := &Instance{
-		Title:           data.Title,
-		Path:            data.Path,
-		Branch:          data.Branch,
-		Status:          data.Status,
-		Height:          data.Height,
-		Width:           data.Width,
-		CreatedAt:       data.CreatedAt,
-		UpdatedAt:       data.UpdatedAt,
-		Program:         data.Program,
-		multiplexerType: mtype,
+		Title:            data.Title,
+		Path:             data.Path,
+		Branch:           data.Branch,
+		Status:           data.Status,
+		Height:           data.Height,
+		Width:            data.Width,
+		CreatedAt:        data.CreatedAt,
+		UpdatedAt:        data.UpdatedAt,
+		Program:          data.Program,
+		Archived:         data.Archived,
+		Summary:          data.Summary,
+		SummaryUpdatedAt: data.SummaryUpdatedAt,
+		multiplexerType:  mtype,
 		gitWorktree: git.NewGitWorktreeFromStorage(
 			data.Worktree.RepoPath,
 			data.Worktree.WorktreePath,
@@ -137,7 +150,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		},
 	}
 
-	if instance.Paused() {
+	if instance.Paused() || instance.Archived {
 		instance.started = true
 		instance.session = NewMultiplexer(mtype, instance.Title, instance.Program)
 	} else {
@@ -395,6 +408,21 @@ func (i *Instance) SetTitle(title string) error {
 		return fmt.Errorf("cannot change title of a started instance")
 	}
 	i.Title = title
+	return nil
+}
+
+// Rename changes the display title of the instance. Unlike SetTitle, this can be called
+// after the instance has started. Note that this only changes the display name - the
+// underlying session name and git worktree path remain unchanged.
+func (i *Instance) Rename(newTitle string) error {
+	if newTitle == "" {
+		return fmt.Errorf("title cannot be empty")
+	}
+	if len(newTitle) > 32 {
+		return fmt.Errorf("title cannot be longer than 32 characters")
+	}
+	i.Title = newTitle
+	i.UpdatedAt = time.Now()
 	return nil
 }
 
