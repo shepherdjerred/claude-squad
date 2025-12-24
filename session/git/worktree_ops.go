@@ -119,6 +119,14 @@ func (g *GitWorktree) setupFromExistingBranch() error {
 		return fmt.Errorf("failed to create worktree from branch %s: %w", g.branchName, err)
 	}
 
+	// Set the base commit SHA for diff computation
+	// Find the merge-base between this branch and the default branch
+	g.reportProgress("Computing base commit for diff...")
+	if err := g.computeBaseCommitSHA(); err != nil {
+		// Log the error but don't fail - diff stats just won't be available
+		log.WarningLog.Printf("could not compute base commit SHA: %v", err)
+	}
+
 	// Create Claude settings file to auto-approve git/gh commands
 	if err := g.createClaudeSettingsFile(); err != nil {
 		log.WarningLog.Printf("failed to create Claude settings file: %v", err)
@@ -312,4 +320,50 @@ func CleanupWorktrees() error {
 	}
 
 	return nil
+}
+
+// computeBaseCommitSHA finds the merge-base between the current branch and the default branch
+// This is used to compute diffs for existing branches that were resumed
+func (g *GitWorktree) computeBaseCommitSHA() error {
+	// Try to find the default branch (main, master, or remote HEAD)
+	defaultBranch, err := g.findDefaultBranch()
+	if err != nil {
+		return fmt.Errorf("could not find default branch: %w", err)
+	}
+
+	// Find the merge-base between the current branch and the default branch
+	mergeBase, err := g.runGitCommand(g.repoPath, "merge-base", g.branchName, defaultBranch)
+	if err != nil {
+		return fmt.Errorf("could not find merge-base: %w", err)
+	}
+
+	g.baseCommitSHA = strings.TrimSpace(mergeBase)
+	return nil
+}
+
+// findDefaultBranch attempts to find the default branch of the repository
+// It tries: remote HEAD, then main, then master
+func (g *GitWorktree) findDefaultBranch() (string, error) {
+	// Try to get the remote HEAD reference (most accurate for determining default branch)
+	if output, err := g.runGitCommand(g.repoPath, "symbolic-ref", "refs/remotes/origin/HEAD"); err == nil {
+		// Output is like "refs/remotes/origin/main"
+		ref := strings.TrimSpace(output)
+		// Extract just the branch name (e.g., "main" from "refs/remotes/origin/main")
+		parts := strings.Split(ref, "/")
+		if len(parts) > 0 {
+			return parts[len(parts)-1], nil
+		}
+	}
+
+	// Fallback: check if main exists
+	if _, err := g.runGitCommand(g.repoPath, "rev-parse", "--verify", "main"); err == nil {
+		return "main", nil
+	}
+
+	// Fallback: check if master exists
+	if _, err := g.runGitCommand(g.repoPath, "rev-parse", "--verify", "master"); err == nil {
+		return "master", nil
+	}
+
+	return "", fmt.Errorf("could not find default branch (tried origin/HEAD, main, master)")
 }
