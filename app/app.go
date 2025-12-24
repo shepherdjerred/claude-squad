@@ -11,6 +11,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -49,6 +51,8 @@ const (
 	stateFileBrowser
 	// stateRename is the state when the user is renaming an instance.
 	stateRename
+	// stateModeSelect is the state when the user is selecting a session mode.
+	stateModeSelect
 )
 
 type home struct {
@@ -102,9 +106,13 @@ type home struct {
 	loadingOverlay *overlay.LoadingOverlay
 	// fileBrowserOverlay displays the file browser for selecting a directory
 	fileBrowserOverlay *overlay.FileBrowserOverlay
+	// modeSelectorOverlay displays the mode selector for choosing session type
+	modeSelectorOverlay *overlay.ModeSelectorOverlay
 
 	// pendingInstancePath stores the selected path from the file browser
 	pendingInstancePath string
+	// pendingSessionType stores the selected session type from mode selector
+	pendingSessionType string
 
 	// -- Background Services --
 
@@ -433,13 +441,34 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		shouldClose := m.fileBrowserOverlay.HandleKeyPress(msg)
 		if shouldClose {
 			if m.fileBrowserOverlay.IsSubmitted() {
-				// User selected a directory, proceed to name input
+				// User selected a directory, proceed to mode selection
 				selectedPath := m.fileBrowserOverlay.GetSelectedPath()
+				m.pendingInstancePath = selectedPath
 				m.fileBrowserOverlay = nil
-				return m.createInstanceWithPath(selectedPath)
+				return m.showModeSelector()
 			} else if m.fileBrowserOverlay.IsCanceled() {
 				// User canceled, go back to default state
 				m.fileBrowserOverlay = nil
+				m.state = stateDefault
+				m.promptAfterName = false
+			}
+		}
+		return m, nil
+	}
+
+	if m.state == stateModeSelect {
+		// Handle mode selector key presses
+		shouldClose := m.modeSelectorOverlay.HandleKeyPress(msg)
+		if shouldClose {
+			if m.modeSelectorOverlay.GetSelected() != "" {
+				// User selected a mode, proceed to name input
+				m.pendingSessionType = m.modeSelectorOverlay.GetSelected()
+				m.modeSelectorOverlay = nil
+				return m.createInstanceWithPath(m.pendingInstancePath)
+			} else {
+				// User canceled, go back to default state
+				m.modeSelectorOverlay = nil
+				m.pendingInstancePath = ""
 				m.state = stateDefault
 				m.promptAfterName = false
 			}
@@ -1026,13 +1055,35 @@ func (m *home) showFileBrowser() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// showModeSelector displays the mode selector overlay for choosing session type
+func (m *home) showModeSelector() (tea.Model, tea.Cmd) {
+	m.modeSelectorOverlay = overlay.NewModeSelectorOverlay()
+	m.modeSelectorOverlay.SetWidth(60)
+	m.state = stateModeSelect
+	return m, nil
+}
+
 // createInstanceWithPath creates a new instance with the given path and enters the name input state
 func (m *home) createInstanceWithPath(path string) (tea.Model, tea.Cmd) {
+	// Determine Docker repo URL for clone mode
+	var dockerRepoURL string
+	if m.pendingSessionType == config.SessionTypeDockerClone {
+		// For clone mode, we need to get the remote URL from the git repo
+		repoURL, err := getGitRemoteURL(path)
+		if err != nil {
+			return m, m.handleError(fmt.Errorf("failed to get git remote URL: %w", err))
+		}
+		dockerRepoURL = repoURL
+	}
+
 	instance, err := session.NewInstance(session.InstanceOptions{
-		Title:       "",
-		Path:        path,
-		Program:     m.program,
-		Multiplexer: m.appConfig.Multiplexer,
+		Title:           "",
+		Path:            path,
+		Program:         m.program,
+		Multiplexer:     m.appConfig.Multiplexer,
+		SessionType:     m.pendingSessionType,
+		DockerBaseImage: m.appConfig.DockerBaseImage,
+		DockerRepoURL:   dockerRepoURL,
 	})
 	if err != nil {
 		return m, m.handleError(err)
@@ -1043,7 +1094,22 @@ func (m *home) createInstanceWithPath(path string) (tea.Model, tea.Cmd) {
 	m.state = stateNew
 	m.menu.SetState(ui.StateNewInstance)
 
+	// Clear pending state
+	m.pendingInstancePath = ""
+	m.pendingSessionType = ""
+
 	return m, nil
+}
+
+// getGitRemoteURL gets the git remote URL for a repository path
+func getGitRemoteURL(path string) (string, error) {
+	// Use git command to get remote URL
+	cmd := exec.Command("git", "-C", path, "remote", "get-url", "origin")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get git remote URL: %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
 }
 
 // handleImportOrphanedSessions finds and imports orphaned Zellij sessions
@@ -1163,6 +1229,11 @@ func (m *home) View() string {
 			log.ErrorLog.Printf("file browser overlay is nil")
 		}
 		return overlay.PlaceOverlay(0, 0, m.fileBrowserOverlay.Render(), mainView, true, true)
+	} else if m.state == stateModeSelect {
+		if m.modeSelectorOverlay == nil {
+			log.ErrorLog.Printf("mode selector overlay is nil")
+		}
+		return overlay.PlaceOverlay(0, 0, m.modeSelectorOverlay.Render(), mainView, true, true)
 	}
 
 	return mainView

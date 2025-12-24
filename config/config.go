@@ -26,6 +26,13 @@ func GetConfigDir() (string, error) {
 	return filepath.Join(homeDir, ".claude-squad"), nil
 }
 
+// Session type constants
+const (
+	SessionTypeZellij      = "zellij"
+	SessionTypeDockerBind  = "docker-bind"
+	SessionTypeDockerClone = "docker-clone"
+)
+
 // Config represents the application configuration
 type Config struct {
 	// DefaultProgram is the default program to run in new instances
@@ -39,6 +46,12 @@ type Config struct {
 	// Multiplexer is the terminal multiplexer to use.
 	// Deprecated: Only "zellij" is now supported. This field is kept for backwards compatibility.
 	Multiplexer string `json:"multiplexer"`
+	// DockerBaseImage is the base Docker image to use for Docker sessions.
+	// Example: "ubuntu:24.04"
+	DockerBaseImage string `json:"docker_base_image"`
+	// DefaultSessionType controls the default session type for new instances.
+	// Valid values: "zellij", "docker-bind", "docker-clone"
+	DefaultSessionType string `json:"default_session_type"`
 }
 
 // DefaultConfig returns the default configuration
@@ -61,7 +74,9 @@ func DefaultConfig() *Config {
 			}
 			return fmt.Sprintf("%s/", strings.ToLower(user.Username))
 		}(),
-		Multiplexer: "zellij",
+		Multiplexer:        "zellij",
+		DockerBaseImage:    "ghcr.io/shepherdjerred/dotfiles",
+		DefaultSessionType: SessionTypeZellij,
 	}
 }
 
