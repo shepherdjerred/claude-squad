@@ -836,15 +836,17 @@ func (i *Instance) CheckAndRestartProgram() error {
 	// Check if program is running
 	running, err := i.session.IsProgramRunning()
 	if err != nil {
+		log.DebugLog.Printf("[CheckAndRestartProgram] Error checking if program running for instance %s: %v", i.Title, err)
 		return fmt.Errorf("failed to check if program is running: %w", err)
 	}
 
 	if running {
+		log.DebugLog.Printf("[CheckAndRestartProgram] Program is running in instance %s, no restart needed", i.Title)
 		return nil // Program is running, nothing to do
 	}
 
 	// Program is not running, try to restart it
-	log.InfoLog.Printf("Program not running in instance %s, attempting restart", i.Title)
+	log.InfoLog.Printf("[CheckAndRestartProgram] Program NOT running in instance %s, attempting restart", i.Title)
 
 	// For Claude, use --resume with session ID if available
 	args := ""
