@@ -100,7 +100,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		data.Worktree = GitWorktreeData{
 			RepoPath:      i.gitWorktree.GetRepoPath(),
 			WorktreePath:  i.gitWorktree.GetWorktreePath(),
-			SessionName:   i.Title,
+			SessionName:   i.gitWorktree.GetSessionName(),
 			BranchName:    i.gitWorktree.GetBranchName(),
 			BaseCommitSHA: i.gitWorktree.GetBaseCommitSHA(),
 		}
@@ -165,7 +165,8 @@ func NewInstanceFromOrphan(orphan *zellij.OrphanedSession) (*Instance, error) {
 	}
 
 	// Create Zellij session and restore connection to existing session
-	session := NewMultiplexer(MultiplexerZellij, instance.Title, instance.Program)
+	// Use the session name from gitWorktree for consistency
+	session := NewMultiplexer(MultiplexerZellij, instance.gitWorktree.GetSessionName(), instance.Program)
 	instance.session = session
 
 	// Restore connection to existing session
@@ -217,7 +218,9 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 
 	if instance.Paused() || instance.Archived {
 		instance.started = true
-		instance.session = NewMultiplexer(mtype, instance.Title, instance.Program)
+		// Use the original session name from gitWorktree, not the display title,
+		// to correctly reconnect to existing multiplexer sessions after rename
+		instance.session = NewMultiplexer(mtype, instance.gitWorktree.GetSessionName(), instance.Program)
 	} else {
 		if err := instance.Start(false); err != nil {
 			return nil, err
@@ -303,16 +306,6 @@ func (i *Instance) startInternal(firstTimeSetup bool, progressCallback git.Progr
 		i.multiplexerType = DefaultMultiplexer()
 	}
 
-	var session Multiplexer
-	if i.session != nil {
-		// Use existing session (useful for testing)
-		session = i.session
-	} else {
-		// Create new session using factory
-		session = NewMultiplexer(i.multiplexerType, i.Title, i.Program)
-	}
-	i.session = session
-
 	if firstTimeSetup {
 		gitWorktree, branchName, err := git.NewGitWorktree(i.Path, i.Title)
 		if err != nil {
@@ -325,6 +318,19 @@ func (i *Instance) startInternal(firstTimeSetup bool, progressCallback git.Progr
 			i.gitWorktree.SetProgressCallback(progressCallback)
 		}
 	}
+
+	// Create the multiplexer session after gitWorktree is set up, so we can use the
+	// correct session name. For firstTimeSetup, gitWorktree was just created with i.Title.
+	// For restore (loading from storage), gitWorktree already has the original session name.
+	var session Multiplexer
+	if i.session != nil {
+		// Use existing session (useful for testing)
+		session = i.session
+	} else {
+		// Create new session using factory with the session name from gitWorktree
+		session = NewMultiplexer(i.multiplexerType, i.gitWorktree.GetSessionName(), i.Program)
+	}
+	i.session = session
 
 	// Setup error handler to cleanup resources on any error
 	var setupErr error

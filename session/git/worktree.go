@@ -114,6 +114,13 @@ func (g *GitWorktree) GetBaseCommitSHA() string {
 	return g.baseCommitSHA
 }
 
+// GetSessionName returns the session name for this worktree.
+// This is the original name used to create the multiplexer session and should
+// not change when the instance is renamed.
+func (g *GitWorktree) GetSessionName() string {
+	return g.sessionName
+}
+
 // SetProgressCallback sets the callback function for progress updates
 func (g *GitWorktree) SetProgressCallback(callback ProgressCallback) {
 	g.progressCallback = callback
