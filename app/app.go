@@ -551,6 +551,22 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	case keys.KeyShiftDown:
 		m.tabbedWindow.ScrollDown()
 		return m, m.instanceChanged()
+	case keys.KeyMoveUp:
+		if m.list.MoveUp() {
+			// Save instances after reordering
+			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+				return m, m.handleError(err)
+			}
+		}
+		return m, m.instanceChanged()
+	case keys.KeyMoveDown:
+		if m.list.MoveDown() {
+			// Save instances after reordering
+			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+				return m, m.handleError(err)
+			}
+		}
+		return m, m.instanceChanged()
 	case keys.KeyTab:
 		m.tabbedWindow.Toggle()
 		m.menu.SetInDiffTab(m.tabbedWindow.IsInDiffTab())
