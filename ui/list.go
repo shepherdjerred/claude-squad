@@ -283,24 +283,14 @@ func (l *List) Down() {
 	}
 }
 
-// Kill selects the next item in the list.
+// Kill removes the selected instance from the list and kills it asynchronously.
 func (l *List) Kill() {
 	if len(l.items) == 0 {
 		return
 	}
 	targetInstance := l.items[l.selectedIdx]
 
-	// Kill the tmux session
-	if err := targetInstance.Kill(); err != nil {
-		log.ErrorLog.Printf("could not kill instance: %v", err)
-	}
-
-	// If you delete the last one in the list, select the previous one.
-	if l.selectedIdx == len(l.items)-1 {
-		defer l.Up()
-	}
-
-	// Unregister the reponame.
+	// Unregister the reponame first (before removing from list).
 	repoName, err := targetInstance.RepoName()
 	if err != nil {
 		log.ErrorLog.Printf("could not get repo name: %v", err)
@@ -308,8 +298,20 @@ func (l *List) Kill() {
 		l.rmRepo(repoName)
 	}
 
-	// Since there's items after this, the selectedIdx can stay the same.
+	// If you delete the last one in the list, select the previous one.
+	if l.selectedIdx == len(l.items)-1 {
+		defer l.Up()
+	}
+
+	// Remove from the list immediately.
 	l.items = append(l.items[:l.selectedIdx], l.items[l.selectedIdx+1:]...)
+
+	// Kill the tmux/zellij session and git worktree asynchronously to avoid blocking the UI.
+	go func() {
+		if err := targetInstance.Kill(); err != nil {
+			log.ErrorLog.Printf("could not kill instance: %v", err)
+		}
+	}()
 }
 
 func (l *List) Attach() (chan struct{}, error) {
