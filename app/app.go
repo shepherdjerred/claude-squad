@@ -639,6 +639,48 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			}
 		}
 		return m, m.instanceChanged()
+	case keys.KeyToggleArchive:
+		m.list.ToggleArchiveView()
+		m.menu.SetShowingArchived(m.list.ShowingArchived())
+		return m, m.instanceChanged()
+	case keys.KeyArchive:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil {
+			return m, nil
+		}
+
+		// Determine action based on current view and instance state
+		if m.list.ShowingArchived() {
+			// In archived view - unarchive (restore) the instance
+			restoreAction := func() tea.Msg {
+				selected.Archived = false
+				if err := m.storage.UnarchiveInstance(selected.Title); err != nil {
+					return err
+				}
+				m.list.RemoveSelectedFromView()
+				return instanceChangedMsg{}
+			}
+			message := fmt.Sprintf("[!] Restore session '%s'?", selected.Title)
+			return m, m.confirmAction(message, restoreAction)
+		} else {
+			// In active view - archive the instance
+			archiveAction := func() tea.Msg {
+				// Pause the instance first if it's running
+				if !selected.Paused() {
+					if err := selected.Pause(); err != nil {
+						return err
+					}
+				}
+				selected.Archived = true
+				if err := m.storage.ArchiveInstance(selected.Title); err != nil {
+					return err
+				}
+				m.list.RemoveSelectedFromView()
+				return instanceChangedMsg{}
+			}
+			message := fmt.Sprintf("[!] Archive session '%s'?", selected.Title)
+			return m, m.confirmAction(message, archiveAction)
+		}
 	case keys.KeyTab:
 		m.tabbedWindow.Toggle()
 		m.menu.SetInDiffTab(m.tabbedWindow.IsInDiffTab())
