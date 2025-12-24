@@ -29,6 +29,12 @@ const (
 
 const ZellijPrefix = "claudesquad_"
 
+const (
+	captureFileMaxRetries   = 3
+	captureFileInitialDelay = 5 * time.Millisecond
+	captureFileMaxDelay     = 100 * time.Millisecond
+)
+
 var whiteSpaceRegex = regexp.MustCompile(`\s+`)
 var ansiEscapeRegex = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
@@ -407,6 +413,57 @@ func (z *ZellijSession) TapDAndEnter() error {
 	return z.TapEnter()
 }
 
+// readCaptureFileWithRetry attempts to read the capture file with retries.
+// It waits for the file to exist and have content before reading.
+func readCaptureFileWithRetry(filePath string) ([]byte, error) {
+	var lastErr error
+	delay := captureFileInitialDelay
+
+	for attempt := 0; attempt <= captureFileMaxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(delay)
+			delay = time.Duration(float64(delay) * 1.5)
+			if delay > captureFileMaxDelay {
+				delay = captureFileMaxDelay
+			}
+		}
+
+		// Check if file exists and has content
+		info, err := os.Stat(filePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				lastErr = fmt.Errorf("capture file does not exist (attempt %d/%d): %w", attempt+1, captureFileMaxRetries+1, err)
+				continue
+			}
+			lastErr = fmt.Errorf("error checking capture file (attempt %d/%d): %w", attempt+1, captureFileMaxRetries+1, err)
+			continue
+		}
+
+		// Verify file has content (non-empty)
+		if info.Size() == 0 {
+			lastErr = fmt.Errorf("capture file is empty (attempt %d/%d)", attempt+1, captureFileMaxRetries+1)
+			continue
+		}
+
+		// Read the file
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			lastErr = fmt.Errorf("error reading capture file (attempt %d/%d): %w", attempt+1, captureFileMaxRetries+1, err)
+			continue
+		}
+
+		// Verify content was read
+		if len(content) == 0 {
+			lastErr = fmt.Errorf("capture file read returned empty content (attempt %d/%d)", attempt+1, captureFileMaxRetries+1)
+			continue
+		}
+
+		return content, nil
+	}
+
+	return nil, fmt.Errorf("failed to read capture file after %d attempts: %w", captureFileMaxRetries+1, lastErr)
+}
+
 // CapturePaneContent captures the current pane content.
 func (z *ZellijSession) CapturePaneContent() (string, error) {
 	// Check cache first
@@ -422,9 +479,9 @@ func (z *ZellijSession) CapturePaneContent() (string, error) {
 		return "", fmt.Errorf("error capturing pane content: %w", err)
 	}
 
-	content, err := os.ReadFile(tmpFile)
+	content, err := readCaptureFileWithRetry(tmpFile)
 	if err != nil {
-		return "", fmt.Errorf("error reading capture file: %w", err)
+		return "", fmt.Errorf("error reading capture file for session %s: %w", z.sanitizedName, err)
 	}
 
 	result := string(content)
@@ -449,9 +506,9 @@ func (z *ZellijSession) CapturePaneContentWithOptions(start, end string) (string
 		return "", fmt.Errorf("error capturing pane content: %w", err)
 	}
 
-	content, err := os.ReadFile(tmpFile)
+	content, err := readCaptureFileWithRetry(tmpFile)
 	if err != nil {
-		return "", fmt.Errorf("error reading capture file: %w", err)
+		return "", fmt.Errorf("error reading capture file for session %s: %w", z.sanitizedName, err)
 	}
 
 	return string(content), nil
