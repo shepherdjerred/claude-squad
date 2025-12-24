@@ -885,8 +885,18 @@ func (l *List) MergeInstances(diskInstances []*session.Instance) bool {
 	}
 
 	// Find instances to remove (in memory but not in disk, and session not alive)
+	// Use a map to deduplicate while building the new list
 	newItems := make([]*session.Instance, 0, len(l.items))
+	seenTitles := make(map[string]bool)
 	for _, memInst := range l.items {
+		// Skip duplicates - keep only the first instance with each title
+		if seenTitles[memInst.Title] {
+			log.InfoLog.Printf("Removing duplicate instance: %s", memInst.Title)
+			changed = true
+			continue
+		}
+		seenTitles[memInst.Title] = true
+
 		if _, existsOnDisk := diskMap[memInst.Title]; existsOnDisk {
 			// Instance exists on disk, keep it
 			newItems = append(newItems, memInst)
