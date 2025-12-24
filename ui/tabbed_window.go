@@ -52,6 +52,9 @@ type TabbedWindow struct {
 	preview  *PreviewPane
 	diff     *DiffPane
 	instance *session.Instance
+
+	// simplifiedMode uses minimal tab styling for narrow terminals
+	simplifiedMode bool
 }
 
 func NewTabbedWindow(preview *PreviewPane, diff *DiffPane) *TabbedWindow {
@@ -156,14 +159,32 @@ func (w *TabbedWindow) IsInDiffTab() bool {
 	return w.activeTab == 1
 }
 
+// GetActiveTabName returns the name of the currently active tab.
+func (w *TabbedWindow) GetActiveTabName() string {
+	if w.activeTab >= 0 && w.activeTab < len(w.tabs) {
+		return w.tabs[w.activeTab]
+	}
+	return ""
+}
+
 // IsPreviewInScrollMode returns true if the preview pane is in scroll mode
 func (w *TabbedWindow) IsPreviewInScrollMode() bool {
 	return w.preview.isScrolling
 }
 
+// SetSimplified enables or disables simplified tab rendering for narrow terminals
+func (w *TabbedWindow) SetSimplified(simplified bool) {
+	w.simplifiedMode = simplified
+}
+
 func (w *TabbedWindow) String() string {
 	if w.width == 0 || w.height == 0 {
 		return ""
+	}
+
+	// Use simplified rendering for narrow terminals
+	if w.simplifiedMode {
+		return w.renderSimplified()
 	}
 
 	var renderedTabs []string
@@ -213,4 +234,52 @@ func (w *TabbedWindow) String() string {
 			lipgloss.Left, lipgloss.Top, content))
 
 	return lipgloss.JoinVertical(lipgloss.Left, "\n", row, window)
+}
+
+// Simplified tab styles for narrow terminals
+var (
+	simpleActiveTabStyle = lipgloss.NewStyle().
+				Foreground(highlightColor).
+				Bold(true).
+				Underline(true)
+	simpleInactiveTabStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#666666"})
+	simpleWindowStyle = lipgloss.NewStyle().
+				Border(lipgloss.NormalBorder()).
+				BorderForeground(highlightColor)
+)
+
+// renderSimplified renders tabs in a minimal style for narrow terminals
+func (w *TabbedWindow) renderSimplified() string {
+	var tabParts []string
+	for i, t := range w.tabs {
+		var tabText string
+		if i == w.activeTab {
+			tabText = simpleActiveTabStyle.Render(t)
+		} else {
+			tabText = simpleInactiveTabStyle.Render(t)
+		}
+		tabParts = append(tabParts, tabText)
+	}
+
+	// Join tabs with separator
+	tabRow := lipgloss.JoinHorizontal(lipgloss.Center, tabParts[0], " │ ", tabParts[1])
+	tabRow = lipgloss.PlaceHorizontal(w.width, lipgloss.Center, tabRow)
+
+	// Get content
+	var content string
+	if w.activeTab == 0 {
+		content = w.preview.String()
+	} else {
+		content = w.diff.String()
+	}
+
+	// Calculate content height (simpler calculation for simplified mode)
+	contentHeight := w.height - 3 // 1 for tab row + 2 for window border
+	window := simpleWindowStyle.
+		Width(w.width - 2).
+		Height(contentHeight).
+		Render(lipgloss.Place(w.width-4, contentHeight-2, lipgloss.Left, lipgloss.Top, content))
+
+	return lipgloss.JoinVertical(lipgloss.Left, tabRow, window)
 }

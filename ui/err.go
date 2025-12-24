@@ -27,6 +27,14 @@ func (e *ErrBox) Clear() {
 	e.err = nil
 }
 
+// GetMessage returns the current error message, or empty string if none.
+func (e *ErrBox) GetMessage() string {
+	if e.err != nil {
+		return e.err.Error()
+	}
+	return ""
+}
+
 func (e *ErrBox) SetSize(width, height int) {
 	e.width = width
 	e.height = height

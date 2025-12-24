@@ -7,13 +7,18 @@ import (
 
 	"claude-squad/log"
 	"claude-squad/session"
+	"claude-squad/ui/layout"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/lipgloss"
 )
 
-const readyIcon = "● "
-const pausedIcon = "⏸ "
+// Status icons with semantic meaning (used with colors for accessibility)
+const (
+	readyIcon   = "● "  // Ready state
+	pausedIcon  = "⏸ " // Paused state
+	runningIcon = "◐ "  // Running state (when no spinner available)
+)
 
 // compactModeThreshold is the height below which the list switches to compact mode
 const compactModeThreshold = 35
@@ -21,17 +26,21 @@ const compactModeThreshold = 35
 // titleAreaHeight is the number of lines used by the title area (2 newlines + title + 2 newlines)
 const titleAreaHeight = 5
 
+// Status styles using semantic colors from styles.go
 var readyStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#51bd73", Dark: "#51bd73"})
+	Foreground(StatusSuccess)
+
+var runningStyle = lipgloss.NewStyle().
+	Foreground(StatusRunning)
 
 var addedLinesStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#51bd73", Dark: "#51bd73"})
+	Foreground(StatusSuccess)
 
 var removedLinesStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.Color("#de613e"))
+	Foreground(StatusError)
 
 var pausedStyle = lipgloss.NewStyle().
-	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
+	Foreground(StatusPaused)
 
 var titleStyle = lipgloss.NewStyle().
 	Padding(1, 1, 0, 1).
@@ -78,6 +87,14 @@ var selectedSummaryStyle = lipgloss.NewStyle().
 var filterStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
 
+var filterActiveStyle = lipgloss.NewStyle().
+	Foreground(Primary).
+	Bold(true).
+	Underline(true)
+
+var filterInactiveStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#666666"})
+
 // Compact mode styles with minimal padding
 var compactTitleStyle = lipgloss.NewStyle().
 	Padding(0, 1).
@@ -119,6 +136,9 @@ type List struct {
 
 	// compactMode is true when the list is in compact mode (smaller terminal)
 	compactMode bool
+
+	// degradation holds the current UI degradation flags
+	degradation layout.Degradation
 }
 
 func NewList(spinner *spinner.Model, autoYes bool) *List {
@@ -136,7 +156,7 @@ func (l *List) SetSize(width, height int) {
 	l.height = height
 	l.renderer.setWidth(width)
 
-	// Auto-detect compact mode based on height
+	// Auto-detect compact mode based on height (can be overridden by SetDegradation)
 	l.compactMode = height < compactModeThreshold
 	l.renderer.compactMode = l.compactMode
 
@@ -144,15 +164,40 @@ func (l *List) SetSize(width, height int) {
 	l.adjustScroll()
 }
 
+// SetDegradation applies layout degradation flags to the list.
+func (l *List) SetDegradation(d layout.Degradation) {
+	l.degradation = d
+	// Override compact mode based on degradation (more restrictive wins)
+	if d.IsCompactMode() && !l.compactMode {
+		l.compactMode = true
+		l.renderer.compactMode = true
+	}
+	l.renderer.degradation = d
+}
+
+// GetSelectedIndex returns the current selected index.
+func (l *List) GetSelectedIndex() int {
+	return l.selectedIdx
+}
+
 // getItemHeight returns the height in lines for a single item
 func (l *List) getItemHeight(item *session.Instance) int {
 	if l.compactMode {
 		return 1 // Single line in compact mode
 	}
-	// Normal mode: title (with 1 padding top) + branch (with 1 padding bottom) = base height
-	// Plus 2 lines spacing between items (\n\n)
-	baseHeight := 4 // title row + branch row with padding
-	if item.Summary != "" {
+
+	// Check degradation flags
+	showDescription := l.degradation.ShouldShowDescription()
+	showSummary := l.degradation.ShouldShowSummary()
+
+	if !showDescription {
+		// Minimal mode: title only (with padding)
+		return 2
+	}
+
+	// Standard mode: title + branch row with padding
+	baseHeight := 4
+	if item.Summary != "" && showSummary {
 		baseHeight = 5 // add summary line
 	}
 	return baseHeight
@@ -160,7 +205,7 @@ func (l *List) getItemHeight(item *session.Instance) int {
 
 // getVisibleRows returns the number of rows available for list items
 func (l *List) getVisibleRows() int {
-	return l.height - titleAreaHeight
+	return l.height - l.degradation.GetTitleAreaHeight()
 }
 
 // calculateVisibleRange returns the start and end indices of items that fit in the visible area
@@ -277,6 +322,7 @@ type InstanceRenderer struct {
 	spinner     *spinner.Model
 	width       int
 	compactMode bool
+	degradation layout.Degradation
 }
 
 func (r *InstanceRenderer) setWidth(width int) {
@@ -373,11 +419,15 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 		muxTag = fmt.Sprintf(" [%s]", mtype)
 	}
 
-	// Build timer info (age and last opened)
-	ageStr := FormatRelativeTime(i.CreatedAt)
-	openedStr := FormatLastOpened(i.LastOpenedAt)
-	timerInfo := fmt.Sprintf("%s | opened %s", ageStr, openedStr)
-	timerInfoLen := len(timerInfo)
+	// Build timer info (age and last opened) - only if not degraded
+	var timerInfo string
+	var timerInfoLen int
+	if r.degradation.ShouldShowTimer() {
+		ageStr := FormatRelativeTime(i.CreatedAt)
+		openedStr := FormatLastOpened(i.LastOpenedAt)
+		timerInfo = fmt.Sprintf("%s | opened %s", ageStr, openedStr)
+		timerInfoLen = len(timerInfo)
+	}
 
 	// Cut the title if it's too long (account for mux tag and timer info)
 	// Layout: [prefix][space][title][muxTag][spaces][timerInfo][space][icon]
@@ -477,9 +527,9 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 
 	branchLine := fmt.Sprintf("%s %s-%s%s%s", strings.Repeat(" ", len(prefix)), branchIcon, branch, spaces, diff)
 
-	// Build summary line if available
+	// Build summary line if available and not degraded
 	var summaryLine string
-	if i.Summary != "" {
+	if i.Summary != "" && r.degradation.ShouldShowSummary() {
 		summaryText := i.Summary
 		// Truncate summary if too long
 		maxSummaryWidth := r.width - len(prefix) - 2
@@ -499,21 +549,28 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 		}
 	}
 
-	// join title, subtitle, and summary
+	// join title, subtitle, and summary based on degradation flags
 	var text string
-	if summaryLine != "" {
+	showDescription := r.degradation.ShouldShowDescription()
+
+	if summaryLine != "" && showDescription {
+		// Full view: title + branch + summary
 		text = lipgloss.JoinVertical(
 			lipgloss.Left,
 			title,
 			descS.Render(branchLine),
 			descS.Render(summaryLine),
 		)
-	} else {
+	} else if showDescription {
+		// Standard view: title + branch
 		text = lipgloss.JoinVertical(
 			lipgloss.Left,
 			title,
 			descS.Render(branchLine),
 		)
+	} else {
+		// Minimal view: title only
+		text = title
 	}
 
 	return text
@@ -545,9 +602,8 @@ func (l *List) String() string {
 
 	b.WriteString("\n")
 
-	// Write filter indicator
-	filterIndicator := fmt.Sprintf(" ◀ %s ▶ ", l.GetFilterName())
-	b.WriteString(filterStyle.Render(filterIndicator))
+	// Write filter tabs with counts
+	b.WriteString(l.renderFilterTabs())
 	b.WriteString("\n")
 
 	// Get visible instances based on archive view mode
@@ -569,8 +625,8 @@ func (l *List) String() string {
 		}
 	}
 
-	// Add scroll indicator if content is clipped
-	if len(visibleItems) > 0 && (start > 0 || end < len(visibleItems)) {
+	// Add scroll indicator if content is clipped and not degraded
+	if len(visibleItems) > 0 && (start > 0 || end < len(visibleItems)) && !l.degradation.HideScrollIndicators {
 		b.WriteString("\n")
 		scrollInfo := fmt.Sprintf(" [%d-%d of %d]", start+1, end, len(visibleItems))
 		b.WriteString(scrollIndicatorStyle.Render(scrollInfo))
@@ -849,6 +905,56 @@ func (l *List) GetFilterName() string {
 	default:
 		return "ALL"
 	}
+}
+
+// getFilterCounts returns counts for all, needs attention, and archived
+func (l *List) getFilterCounts() (all, attention, archived int) {
+	for _, item := range l.items {
+		if item.Archived {
+			archived++
+		} else {
+			all++
+			if item.Status == session.Ready {
+				attention++
+			}
+		}
+	}
+	return
+}
+
+// renderFilterTabs renders the filter tabs with counts
+func (l *List) renderFilterTabs() string {
+	allCount, attentionCount, archivedCount := l.getFilterCounts()
+
+	var tabs []string
+
+	// ALL tab
+	allLabel := fmt.Sprintf("ALL(%d)", allCount)
+	if l.filterMode == FilterAll {
+		tabs = append(tabs, filterActiveStyle.Render(allLabel))
+	} else {
+		tabs = append(tabs, filterInactiveStyle.Render(allLabel))
+	}
+
+	// ATTENTION tab
+	attentionLabel := fmt.Sprintf("ATTENTION(%d)", attentionCount)
+	if l.filterMode == FilterNeedsAttention {
+		tabs = append(tabs, filterActiveStyle.Render(attentionLabel))
+	} else {
+		tabs = append(tabs, filterInactiveStyle.Render(attentionLabel))
+	}
+
+	// ARCHIVED tab
+	archivedLabel := fmt.Sprintf("ARCHIVED(%d)", archivedCount)
+	if l.filterMode == FilterArchived {
+		tabs = append(tabs, filterActiveStyle.Render(archivedLabel))
+	} else {
+		tabs = append(tabs, filterInactiveStyle.Render(archivedLabel))
+	}
+
+	// Join with arrows
+	separator := filterStyle.Render(" ◀ ")
+	return " " + strings.Join(tabs, separator) + filterStyle.Render(" ▶")
 }
 
 // ShowingArchived returns true if currently showing archived instances

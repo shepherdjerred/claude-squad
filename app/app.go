@@ -2,11 +2,13 @@ package app
 
 import (
 	"claude-squad/config"
+	"claude-squad/inspect"
 	"claude-squad/keys"
 	"claude-squad/log"
 	"claude-squad/session"
 	"claude-squad/session/zellij"
 	"claude-squad/ui"
+	"claude-squad/ui/layout"
 	"claude-squad/ui/overlay"
 	"context"
 	"fmt"
@@ -121,6 +123,16 @@ type home struct {
 
 	// metadataUpdateInProgress prevents overlapping async metadata updates
 	metadataUpdateInProgress bool
+
+	// -- Layout State --
+
+	// layoutConstraints holds the current computed layout constraints
+	layoutConstraints layout.Constraints
+	// degradation holds the current UI degradation flags
+	degradation layout.Degradation
+	// termWidth and termHeight track current terminal dimensions
+	termWidth  int
+	termHeight int
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
@@ -172,33 +184,52 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 	return h
 }
 
-// updateHandleWindowSizeEvent sets the sizes of the components.
+// updateHandleWindowSizeEvent sets the sizes of the components using the layout constraint system.
 // The components will try to render inside their bounds.
 func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
-	// List takes 30% of width, preview takes 70%
-	listWidth := int(float32(msg.Width) * 0.3)
-	tabsWidth := msg.Width - listWidth
+	// Store terminal dimensions
+	m.termWidth = msg.Width
+	m.termHeight = msg.Height
 
-	// Menu takes 10% of height, list and window take 90%
-	contentHeight := int(float32(msg.Height) * 0.9)
-	menuHeight := msg.Height - contentHeight - 1     // minus 1 for error box
-	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1) // error box takes 1 row
+	// Compute layout constraints using the new system
+	m.layoutConstraints = layout.ComputeConstraints(msg.Width, msg.Height)
+	m.degradation = layout.ComputeDegradation(m.layoutConstraints)
 
-	m.tabbedWindow.SetSize(tabsWidth, contentHeight)
-	m.list.SetSize(listWidth, contentHeight)
+	// Apply constraints to components
+	m.list.SetSize(m.layoutConstraints.ListWidth, m.layoutConstraints.ListHeight)
+	m.list.SetDegradation(m.degradation)
 
+	m.tabbedWindow.SetSize(m.layoutConstraints.PreviewWidth, m.layoutConstraints.PreviewHeight)
+	m.tabbedWindow.SetSimplified(m.degradation.SimplifyTabs)
+
+	m.menu.SetSize(m.layoutConstraints.MenuWidth, m.layoutConstraints.MenuHeight)
+	m.menu.SetCompact(m.degradation.SingleLineMenu)
+
+	m.errBox.SetSize(m.layoutConstraints.ErrBoxWidth, m.layoutConstraints.ErrBoxHeight)
+
+	// Update overlays with constrained sizes
+	overlayWidth, overlayHeight := layout.ComputeOverlaySize(msg.Width, msg.Height, 60, 20)
 	if m.textInputOverlay != nil {
-		m.textInputOverlay.SetSize(int(float32(msg.Width)*0.6), int(float32(msg.Height)*0.4))
+		m.textInputOverlay.SetSize(overlayWidth, overlayHeight)
 	}
 	if m.textOverlay != nil {
-		m.textOverlay.SetWidth(int(float32(msg.Width) * 0.6))
+		m.textOverlay.SetWidth(overlayWidth)
+	}
+	if m.fileBrowserOverlay != nil {
+		fbWidth, fbHeight := layout.ComputeOverlaySize(msg.Width, msg.Height, 70, 25)
+		m.fileBrowserOverlay.SetSize(fbWidth, fbHeight)
 	}
 
+	// Update preview size for sessions
 	previewWidth, previewHeight := m.tabbedWindow.GetPreviewSize()
 	if err := m.list.SetSessionPreviewSize(previewWidth, previewHeight); err != nil {
 		log.ErrorLog.Print(err)
 	}
-	m.menu.SetSize(msg.Width, menuHeight)
+
+	// Write inspection snapshot if enabled
+	if inspect.IsEnabled() {
+		m.writeInspectionSnapshot()
+	}
 }
 
 func (m *home) Init() tea.Cmd {
@@ -1197,16 +1228,185 @@ func (m *home) handleImportOrphanedSessions() (tea.Model, tea.Cmd) {
 	)
 }
 
+// String returns a string representation of the app state.
+func (s state) String() string {
+	switch s {
+	case stateDefault:
+		return "default"
+	case stateNew:
+		return "new"
+	case statePrompt:
+		return "prompt"
+	case stateHelp:
+		return "help"
+	case stateConfirm:
+		return "confirm"
+	case stateLoading:
+		return "loading"
+	case stateFileBrowser:
+		return "file_browser"
+	case stateRename:
+		return "rename"
+	default:
+		return "unknown"
+	}
+}
+
+// writeInspectionSnapshot creates and writes a UI inspection snapshot.
+func (m *home) writeInspectionSnapshot() {
+	snapshot := m.generateSnapshot()
+	if err := inspect.WriteSnapshot(snapshot); err != nil {
+		log.ErrorLog.Printf("Failed to write inspection snapshot: %v", err)
+	}
+}
+
+// generateSnapshot creates an inspection snapshot of the current UI state.
+func (m *home) generateSnapshot() *inspect.Snapshot {
+	// Determine overlay type
+	overlayType := ""
+	hasOverlay := false
+	switch m.state {
+	case statePrompt, stateRename:
+		overlayType = "text_input"
+		hasOverlay = true
+	case stateHelp:
+		overlayType = "help"
+		hasOverlay = true
+	case stateConfirm:
+		overlayType = "confirmation"
+		hasOverlay = true
+	case stateLoading:
+		overlayType = "loading"
+		hasOverlay = true
+	case stateFileBrowser:
+		overlayType = "file_browser"
+		hasOverlay = true
+	}
+
+	// Build component tree
+	root := inspect.NewNode("Application").
+		WithID("claude-squad").
+		WithBounds(0, 0, m.termWidth, m.termHeight)
+
+	// Add list component
+	listNode := inspect.NewNode("List").
+		WithID("instance-list").
+		WithBounds(0, 0, m.layoutConstraints.ListWidth, m.layoutConstraints.ListHeight).
+		WithState("selected_index", m.list.GetSelectedIndex()).
+		WithState("instance_count", m.list.NumInstances()).
+		WithState("compact_mode", m.degradation.IsCompactMode()).
+		WithState("filter_mode", m.list.GetFilterName())
+
+	root.AddChild(listNode)
+
+	// Add tabbed window
+	tabbedNode := inspect.NewNode("TabbedWindow").
+		WithID("tabbed-window").
+		WithBounds(m.layoutConstraints.ListWidth, 0, m.layoutConstraints.PreviewWidth, m.layoutConstraints.PreviewHeight).
+		WithState("active_tab", m.tabbedWindow.GetActiveTabName()).
+		WithState("in_diff_tab", m.tabbedWindow.IsInDiffTab())
+
+	root.AddChild(tabbedNode)
+
+	// Add menu
+	menuNode := inspect.NewNode("Menu").
+		WithID("main-menu").
+		WithBounds(0, m.layoutConstraints.ListHeight, m.layoutConstraints.MenuWidth, m.layoutConstraints.MenuHeight).
+		WithState("compact", m.degradation.SingleLineMenu)
+
+	root.AddChild(menuNode)
+
+	// Create snapshot
+	snapshot := inspect.NewSnapshot().
+		WithTerminal(m.termWidth, m.termHeight).
+		WithLayout(m.layoutConstraints, m.degradation).
+		WithComponents(root)
+
+	snapshot.AppState = inspect.AppStateInfo{
+		State:         m.state.String(),
+		HasOverlay:    hasOverlay,
+		OverlayType:   overlayType,
+		InstanceCount: m.list.NumInstances(),
+		SelectedIndex: m.list.GetSelectedIndex(),
+		ErrorMessage:  m.errBox.GetMessage(),
+	}
+
+	return snapshot
+}
+
+// renderMinSizeWarning renders a warning when terminal is below minimum size.
+func (m *home) renderMinSizeWarning() string {
+	msg := fmt.Sprintf(
+		"Terminal too small\n\nMinimum: %dx%d\nCurrent: %dx%d\n\nPlease resize your terminal.",
+		layout.MinWidth, layout.MinHeight,
+		m.termWidth, m.termHeight,
+	)
+	return lipgloss.Place(
+		m.termWidth,
+		m.termHeight,
+		lipgloss.Center,
+		lipgloss.Center,
+		msg,
+	)
+}
+
 func (m *home) View() string {
-	listWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.list.String())
-	previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.tabbedWindow.String())
-	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, listWithPadding, previewWithPadding)
+	// Start frame timing for profiling
+	frameStart := time.Now()
+	defer func() {
+		log.GetProfiler().RecordFrame(time.Since(frameStart))
+	}()
+
+	// Check for minimum size warning
+	if m.degradation.ShowMinWarning {
+		return m.renderMinSizeWarning()
+	}
+
+	// Build main content based on layout mode
+	var mainContent string
+	if m.degradation.UseVerticalStack {
+		// Vertical layout: list on top, preview below
+		doneList := log.GetProfiler().StartRender("list")
+		listView := m.list.String()
+		doneList()
+
+		doneTabs := log.GetProfiler().StartRender("tabbedWindow")
+		tabsView := m.tabbedWindow.String()
+		doneTabs()
+
+		mainContent = lipgloss.JoinVertical(
+			lipgloss.Left,
+			listView,
+			tabsView,
+		)
+	} else {
+		// Horizontal layout: list left, preview right
+		doneList := log.GetProfiler().StartRender("list")
+		listView := m.list.String()
+		doneList()
+
+		doneTabs := log.GetProfiler().StartRender("tabbedWindow")
+		tabsView := m.tabbedWindow.String()
+		doneTabs()
+
+		listWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(listView)
+		previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(tabsView)
+		mainContent = lipgloss.JoinHorizontal(lipgloss.Top, listWithPadding, previewWithPadding)
+	}
+
+	doneMenu := log.GetProfiler().StartRender("menu")
+	menuView := m.menu.String()
+	doneMenu()
+
+	doneErrBox := log.GetProfiler().StartRender("errBox")
+	errBoxView := m.errBox.String()
+	doneErrBox()
 
 	mainView := lipgloss.JoinVertical(
 		lipgloss.Center,
-		listAndPreview,
-		m.menu.String(),
-		m.errBox.String(),
+		mainContent,
+		menuView,
+		errBoxView,
 	)
 
 	if m.state == statePrompt || m.state == stateRename {

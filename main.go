@@ -28,7 +28,9 @@ var (
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := context.Background()
 			log.Initialize(daemonFlag)
+			log.InitDebug()
 			defer log.Close()
+			defer log.CloseDebug()
 
 			if daemonFlag {
 				cfg := config.LoadConfig()
