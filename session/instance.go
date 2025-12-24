@@ -50,6 +50,8 @@ type Instance struct {
 	AutoYes bool
 	// Prompt is the initial prompt to pass to the instance on startup
 	Prompt string
+	// Archived is true if the instance has been archived (hidden but not deleted).
+	Archived bool
 
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
@@ -83,6 +85,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		UpdatedAt:        time.Now(),
 		Program:          i.Program,
 		AutoYes:          i.AutoYes,
+		Archived:         i.Archived,
 		Multiplexer:      string(i.multiplexerType),
 		Summary:          i.Summary,
 		SummaryUpdatedAt: i.SummaryUpdatedAt,
@@ -129,6 +132,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		CreatedAt:        data.CreatedAt,
 		UpdatedAt:        data.UpdatedAt,
 		Program:          data.Program,
+		Archived:         data.Archived,
 		Summary:          data.Summary,
 		SummaryUpdatedAt: data.SummaryUpdatedAt,
 		multiplexerType:  mtype,
@@ -146,7 +150,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		},
 	}
 
-	if instance.Paused() {
+	if instance.Paused() || instance.Archived {
 		instance.started = true
 		instance.session = NewMultiplexer(mtype, instance.Title, instance.Program)
 	} else {

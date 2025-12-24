@@ -52,9 +52,12 @@ type Menu struct {
 
 	// keyDown is the key which is pressed. The default is -1.
 	keyDown keys.KeyName
+
+	// showingArchived indicates if we're viewing archived instances
+	showingArchived bool
 }
 
-var defaultMenuOptions = []keys.KeyName{keys.KeyNew, keys.KeyPrompt, keys.KeyHelp, keys.KeyQuit}
+var defaultMenuOptions = []keys.KeyName{keys.KeyNew, keys.KeyPrompt, keys.KeyToggleArchive, keys.KeyHelp, keys.KeyQuit}
 var newInstanceMenuOptions = []keys.KeyName{keys.KeySubmitName}
 var promptMenuOptions = []keys.KeyName{keys.KeySubmitName}
 var renameMenuOptions = []keys.KeyName{keys.KeySubmitName}
@@ -102,6 +105,12 @@ func (m *Menu) SetInDiffTab(inDiffTab bool) {
 	m.updateOptions()
 }
 
+// SetShowingArchived updates whether we're viewing archived instances
+func (m *Menu) SetShowingArchived(showingArchived bool) {
+	m.showingArchived = showingArchived
+	m.updateOptions()
+}
+
 // updateOptions updates the menu options based on current state and instance
 func (m *Menu) updateOptions() {
 	switch m.state {
@@ -126,7 +135,7 @@ func (m *Menu) updateOptions() {
 
 func (m *Menu) addInstanceOptions() {
 	// Instance management group
-	options := []keys.KeyName{keys.KeyNew, keys.KeyKill, keys.KeyRename, keys.KeyMoveUp, keys.KeyMoveDown}
+	options := []keys.KeyName{keys.KeyNew, keys.KeyKill, keys.KeyRename, keys.KeyArchive, keys.KeyMoveUp, keys.KeyMoveDown}
 
 	// Action group
 	actionGroup := []keys.KeyName{keys.KeyEnter, keys.KeySubmit}
@@ -142,7 +151,7 @@ func (m *Menu) addInstanceOptions() {
 	}
 
 	// System group
-	systemGroup := []keys.KeyName{keys.KeyTab, keys.KeyHelp, keys.KeyQuit}
+	systemGroup := []keys.KeyName{keys.KeyToggleArchive, keys.KeyTab, keys.KeyHelp, keys.KeyQuit}
 
 	// Combine all groups
 	options = append(options, actionGroup...)
@@ -160,14 +169,47 @@ func (m *Menu) SetSize(width, height int) {
 func (m *Menu) String() string {
 	var s strings.Builder
 
-	// Define group boundaries
-	groups := []struct {
+	// Define group boundaries based on current state
+	// Instance management group: n, D, R, A, K, J (6 items)
+	// Action group: enter, submit, checkout/resume, [shift+up] (3-4 items)
+	// System group: a (archived), tab, ?, q (4 items)
+	var groups []struct {
 		start int
 		end   int
-	}{
-		{0, 5},  // Instance management group (n, D, R, K, J)
-		{5, 8},  // Action group (enter, submit, pause/resume)
-		{9, 11}, // System group (tab, help, q)
+	}
+
+	switch m.state {
+	case StateEmpty:
+		// Empty state: n, N, a, ?, q
+		groups = []struct {
+			start int
+			end   int
+		}{
+			{0, 2}, // Action group (n, N)
+			{2, 5}, // System group (a, ?, q)
+		}
+	case StateDefault:
+		// Default state with instance: n, D, R, A, K, J | enter, submit, checkout/resume | a, tab, ?, q
+		actionEnd := 9 // Base: 6 instance + 3 action
+		if m.isInDiffTab {
+			actionEnd = 10 // +1 for shift+up
+		}
+		groups = []struct {
+			start int
+			end   int
+		}{
+			{0, 6},          // Instance management group (n, D, R, A, K, J)
+			{6, actionEnd},  // Action group (enter, submit, checkout/resume, [shift+up])
+			{actionEnd, len(m.options)}, // System group (a, tab, ?, q)
+		}
+	default:
+		// NewInstance, Prompt, or Rename state
+		groups = []struct {
+			start int
+			end   int
+		}{
+			{0, len(m.options)}, // All options in one group
+		}
 	}
 
 	for i, k := range m.options {
@@ -191,7 +233,9 @@ func (m *Menu) String() string {
 			inActionGroup = i <= 1
 		default:
 			// For other states, the action group is the second group
-			inActionGroup = i >= groups[1].start && i < groups[1].end
+			if len(groups) > 1 {
+				inActionGroup = i >= groups[1].start && i < groups[1].end
+			}
 		}
 
 		if inActionGroup {
