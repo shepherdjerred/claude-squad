@@ -210,9 +210,9 @@ func (g *GitWorktree) Cleanup() error {
 	repo, err := git.PlainOpen(g.repoPath)
 	if err != nil {
 		// If the repository doesn't exist, there's nothing more to clean up
-		// This can happen if the repo was deleted externally
-		if err == git.ErrRepositoryNotExists {
-			log.WarningLog.Printf("Repository %s does not exist, skipping branch cleanup", g.repoPath)
+		// This can happen if the repo was deleted externally - this is the desired end state
+		if err == git.ErrRepositoryNotExists || strings.Contains(err.Error(), "repository does not exist") {
+			log.InfoLog.Printf("Repository %s does not exist, cleanup already complete", g.repoPath)
 			return g.combineErrors(errs)
 		}
 		errs = append(errs, fmt.Errorf("failed to open repository for cleanup: %w", err))

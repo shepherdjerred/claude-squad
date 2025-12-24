@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const (
@@ -153,7 +154,19 @@ func LoadConfig() *Config {
 
 	var config Config
 	if err := json.Unmarshal(data, &config); err != nil {
-		log.ErrorLog.Printf("failed to parse config file: %v", err)
+		// Log the error with more context about what failed
+		preview := string(data)
+		if len(preview) > 200 {
+			preview = preview[:200] + "..."
+		}
+		log.ErrorLog.Printf("failed to parse config file at %s: %v\nConfig content preview: %s", configPath, err, preview)
+
+		// Backup the corrupted config before falling back to defaults
+		backupPath := configPath + ".corrupt." + time.Now().Format("20060102-150405")
+		if backupErr := os.WriteFile(backupPath, data, 0644); backupErr == nil {
+			log.InfoLog.Printf("Backed up corrupted config to: %s", backupPath)
+		}
+
 		return DefaultConfig()
 	}
 
