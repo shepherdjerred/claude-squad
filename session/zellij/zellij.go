@@ -298,9 +298,25 @@ func (z *ZellijSession) Attach() (chan struct{}, error) {
 	// This prevents content rendered at preview-pane size from being displayed
 	// when we start copying PTY output to stdout.
 	cols, rows, err := term.GetSize(int(os.Stdin.Fd()))
-	if err == nil {
-		_ = z.SetDetachedSize(cols, rows)
+	if err != nil {
+		log.ErrorLog.Printf("Failed to get terminal size on attach: %v", err)
+		// Use sensible defaults as fallback
+		cols, rows = 120, 40
 	}
+
+	log.InfoLog.Printf("Resizing PTY to %dx%d for attach (session: %s)", cols, rows, z.sanitizedName)
+
+	// Apply resize with retry logic - CRITICAL for reattach scenarios
+	if err := z.resizeWithRetry(cols, rows, 3); err != nil {
+		log.ErrorLog.Printf("Failed to resize PTY on attach: %v (session: %s)", err, z.sanitizedName)
+		// Continue anyway - UI might be slightly off but session still usable
+	} else {
+		log.InfoLog.Printf("Successfully resized PTY to %dx%d (session: %s)", cols, rows, z.sanitizedName)
+	}
+
+	// Small delay to ensure PTY processes the resize before we start I/O
+	// This prevents the first few bytes of output from being rendered at the old (preview) size
+	time.Sleep(50 * time.Millisecond)
 
 	// Show a hint to the user about how to detach
 	fmt.Fprintf(os.Stdout, "\033[90m--- Press Ctrl+Q to detach ---\033[0m\n")
@@ -665,22 +681,84 @@ func (z *ZellijSession) DoesSessionExist() bool {
 	return false
 }
 
-// SetDetachedSize sets the pane dimensions while detached.
-func (z *ZellijSession) SetDetachedSize(width, height int) error {
-	// Also resize the terminal buffer
-	if z.termBuffer != nil {
-		z.termBuffer.Resize(height, width)
-	}
+// resizeWithRetry attempts to resize the PTY with retry logic for reliability.
+// This is critical for reattach scenarios where the PTY may still be processing
+// the previous resize to preview dimensions.
+//
+// Parameters:
+//   cols, rows: Target dimensions
+//   maxRetries: Maximum number of attempts (recommended: 3)
+//
+// Returns error only if all attempts fail
+func (z *ZellijSession) resizeWithRetry(cols, rows int, maxRetries int) error {
+	var lastErr error
 
-	if z.ptmx == nil {
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			// Wait before retrying to give PTY time to process
+			delay := time.Duration(attempt) * 20 * time.Millisecond
+			time.Sleep(delay)
+			log.DebugLog.Printf("Retry %d/%d: Resizing PTY to %dx%d (session: %s)",
+				attempt+1, maxRetries, cols, rows, z.sanitizedName)
+		}
+
+		// Attempt the resize
+		if err := z.SetDetachedSize(cols, rows); err != nil {
+			lastErr = err
+			log.ErrorLog.Printf("Resize attempt %d/%d failed: %v (session: %s)",
+				attempt+1, maxRetries, err, z.sanitizedName)
+			continue
+		}
+
+		// Verify the resize took effect
+		if z.termBuffer != nil {
+			bufHeight, bufWidth := z.termBuffer.GetSize()
+			if bufHeight == rows && bufWidth == cols {
+				log.DebugLog.Printf("Resize verified: terminal buffer is %dx%d (session: %s)",
+					bufWidth, bufHeight, z.sanitizedName)
+				return nil
+			}
+			log.DebugLog.Printf("Resize verification: expected %dx%d, got %dx%d (session: %s)",
+				cols, rows, bufWidth, bufHeight, z.sanitizedName)
+		}
+
+		// Even without verification, if no error occurred, consider it success
 		return nil
 	}
-	return pty.Setsize(z.ptmx, &pty.Winsize{
+
+	return fmt.Errorf("failed to resize PTY after %d attempts: %w", maxRetries, lastErr)
+}
+
+// SetDetachedSize sets the pane dimensions while detached.
+func (z *ZellijSession) SetDetachedSize(width, height int) error {
+	// Always resize the terminal buffer first (even if PTY is nil)
+	// This ensures consistency when PTY is later restored
+	if z.termBuffer != nil {
+		z.termBuffer.Resize(height, width)
+		log.DebugLog.Printf("Terminal buffer resized to %dx%d (session: %s)",
+			width, height, z.sanitizedName)
+	}
+
+	// If PTY isn't available, buffer resize is all we can do
+	if z.ptmx == nil {
+		log.DebugLog.Printf("PTY is nil, skipping PTY resize (session: %s)", z.sanitizedName)
+		return nil
+	}
+
+	// Resize the PTY
+	winsize := &pty.Winsize{
 		Rows: uint16(height),
 		Cols: uint16(width),
 		X:    0,
 		Y:    0,
-	})
+	}
+
+	if err := pty.Setsize(z.ptmx, winsize); err != nil {
+		return fmt.Errorf("failed to set PTY size to %dx%d: %w", width, height, err)
+	}
+
+	log.DebugLog.Printf("PTY resized to %dx%d (session: %s)", width, height, z.sanitizedName)
+	return nil
 }
 
 // GetProgram returns the program being run in this session.

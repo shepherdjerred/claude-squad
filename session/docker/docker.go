@@ -295,11 +295,27 @@ func (d *DockerSession) Attach() (chan struct{}, error) {
 		return nil, fmt.Errorf("failed to set terminal raw mode: %w", err)
 	}
 
-	// Get terminal size and resize PTY
-	width, height, _ := term.GetSize(int(os.Stdin.Fd()))
-	if err := pty.Setsize(d.ptmx, &pty.Winsize{Rows: uint16(height), Cols: uint16(width)}); err != nil {
-		log.ErrorLog.Printf("Failed to set PTY size: %v", err)
+	// Get terminal size for resize - critical for reattach scenarios
+	width, height, err := term.GetSize(int(os.Stdin.Fd()))
+	if err != nil {
+		log.ErrorLog.Printf("Failed to get terminal size on attach: %v (container: %s)", err, d.containerName)
+		width, height = 120, 40 // Use defaults
 	}
+
+	log.InfoLog.Printf("Resizing Docker PTY to %dx%d for attach (container: %s)", width, height, d.containerName)
+
+	// Apply resize with proper error handling
+	winsize := &pty.Winsize{Rows: uint16(height), Cols: uint16(width)}
+	if err := pty.Setsize(d.ptmx, winsize); err != nil {
+		log.ErrorLog.Printf("Failed to set PTY size: %v (container: %s)", err, d.containerName)
+	} else {
+		// Synchronize terminal buffer
+		d.termBuffer.Resize(height, width)
+		log.InfoLog.Printf("Successfully resized Docker PTY to %dx%d (container: %s)", width, height, d.containerName)
+	}
+
+	// Small delay to ensure resize is processed before I/O starts
+	time.Sleep(50 * time.Millisecond)
 
 	// Copy PTY -> stdout
 	d.wg.Add(1)
@@ -472,8 +488,15 @@ func (d *DockerSession) DoesSessionExist() bool {
 // SetDetachedSize sets the pane dimensions while detached.
 func (d *DockerSession) SetDetachedSize(width, height int) error {
 	d.termBuffer.Resize(height, width)
+	log.DebugLog.Printf("Docker terminal buffer resized to %dx%d (container: %s)",
+		width, height, d.containerName)
+
 	if d.ptmx != nil {
-		return pty.Setsize(d.ptmx, &pty.Winsize{Rows: uint16(height), Cols: uint16(width)})
+		winsize := &pty.Winsize{Rows: uint16(height), Cols: uint16(width)}
+		if err := pty.Setsize(d.ptmx, winsize); err != nil {
+			return fmt.Errorf("failed to set Docker PTY size to %dx%d: %w", width, height, err)
+		}
+		log.DebugLog.Printf("Docker PTY resized to %dx%d (container: %s)", width, height, d.containerName)
 	}
 	return nil
 }
