@@ -3,6 +3,7 @@ package session
 import (
 	"claude-squad/log"
 	"claude-squad/session/git"
+	"claude-squad/session/zellij"
 	"path/filepath"
 
 	"fmt"
@@ -112,6 +113,66 @@ func (i *Instance) ToInstanceData() InstanceData {
 	}
 
 	return data
+}
+
+// NewInstanceFromOrphan creates an Instance from recovered orphaned session data
+func NewInstanceFromOrphan(orphan *zellij.OrphanedSession) (*Instance, error) {
+	if orphan == nil {
+		return nil, fmt.Errorf("orphan session data is nil")
+	}
+
+	// Validate required fields
+	if orphan.SessionName == "" {
+		return nil, fmt.Errorf("orphan session name is empty")
+	}
+	if orphan.WorktreePath == "" {
+		return nil, fmt.Errorf("orphan worktree path is empty")
+	}
+
+	// Determine repo path - use recovered path or fall back to worktree path
+	repoPath := orphan.RepoPath
+	if repoPath == "" {
+		repoPath = orphan.WorktreePath
+	}
+
+	// Create git worktree from recovered data
+	gitWorktree := git.NewGitWorktreeFromStorage(
+		repoPath,
+		orphan.WorktreePath,
+		orphan.Title,
+		orphan.BranchName,
+		"", // Base commit SHA is unknown for orphaned sessions
+	)
+
+	// Create the instance
+	now := time.Now()
+	instance := &Instance{
+		Title:           orphan.Title,
+		Path:            orphan.WorktreePath,
+		Branch:          orphan.BranchName,
+		Status:          Running,
+		Program:         orphan.Program,
+		Height:          0,
+		Width:           0,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		AutoYes:         false,
+		multiplexerType: MultiplexerZellij, // Orphaned sessions are always Zellij
+		gitWorktree:     gitWorktree,
+	}
+
+	// Create Zellij session and restore connection to existing session
+	session := NewMultiplexer(MultiplexerZellij, instance.Title, instance.Program)
+	instance.session = session
+
+	// Restore connection to existing session
+	if err := session.Restore(); err != nil {
+		return nil, fmt.Errorf("failed to restore orphan session: %w", err)
+	}
+
+	instance.started = true
+
+	return instance, nil
 }
 
 // FromInstanceData creates a new Instance from serialized data

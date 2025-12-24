@@ -39,6 +39,9 @@ const (
 	// Archive keybindings
 	KeyArchive       // Archive the selected instance
 	KeyToggleArchive // Toggle between archived and active view
+
+	// Import orphaned sessions
+	KeyImport
 )
 
 // GlobalKeyStringsMap is a global, immutable map string to keybinding.
@@ -65,6 +68,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"R":          KeyRename,
 	"A":          KeyArchive,
 	"a":          KeyToggleArchive,
+	"i":          KeyImport,
 }
 
 // GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
@@ -144,6 +148,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyToggleArchive: key.NewBinding(
 		key.WithKeys("a"),
 		key.WithHelp("a", "archived"),
+	),
+	KeyImport: key.NewBinding(
+		key.WithKeys("i"),
+		key.WithHelp("i", "import"),
 	),
 
 	// -- Special keybindings --

@@ -5,6 +5,7 @@ import (
 	"claude-squad/keys"
 	"claude-squad/log"
 	"claude-squad/session"
+	"claude-squad/session/zellij"
 	"claude-squad/ui"
 	"claude-squad/ui/overlay"
 	"context"
@@ -767,6 +768,8 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(err)
 		}
 		return m, tea.WindowSize()
+	case keys.KeyImport:
+		return m.handleImportOrphanedSessions()
 	case keys.KeyEnter:
 		if m.list.NumInstances() == 0 {
 			return m, nil
@@ -924,6 +927,86 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 	}
 
 	return nil
+}
+
+// handleImportOrphanedSessions finds and imports orphaned Zellij sessions
+func (m *home) handleImportOrphanedSessions() (tea.Model, tea.Cmd) {
+	// Get list of currently tracked instance titles
+	instances := m.list.GetInstances()
+	trackedTitles := make([]string, len(instances))
+	for i, inst := range instances {
+		trackedTitles[i] = inst.Title
+	}
+
+	// Find orphaned sessions
+	orphans, err := zellij.ListOrphanedSessions(trackedTitles, nil)
+	if err != nil {
+		return m, m.handleError(fmt.Errorf("failed to list orphaned sessions: %w", err))
+	}
+
+	if len(orphans) == 0 {
+		return m, m.handleError(fmt.Errorf("no orphaned sessions found"))
+	}
+
+	// Check instance limit
+	if m.list.NumInstances()+len(orphans) > GlobalInstanceLimit {
+		return m, m.handleError(fmt.Errorf("importing %d sessions would exceed the limit of %d instances",
+			len(orphans), GlobalInstanceLimit))
+	}
+
+	// Import each orphaned session
+	importedCount := 0
+	var importErrors []string
+	for _, orphan := range orphans {
+		// Recover full metadata for this session
+		recovered, err := zellij.RecoverMetadata(orphan.SessionName, nil)
+		if err != nil {
+			importErrors = append(importErrors, fmt.Sprintf("%s: %v", orphan.Title, err))
+			continue
+		}
+
+		// Create instance from recovered data
+		instance, err := session.NewInstanceFromOrphan(recovered)
+		if err != nil {
+			importErrors = append(importErrors, fmt.Sprintf("%s: %v", orphan.Title, err))
+			continue
+		}
+
+		// Add to the list
+		finalizer := m.list.AddInstance(instance)
+		finalizer()
+		if m.autoYes {
+			instance.AutoYes = true
+		}
+		importedCount++
+	}
+
+	// Save state after importing
+	if importedCount > 0 {
+		if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+			return m, m.handleError(fmt.Errorf("failed to save after import: %w", err))
+		}
+	}
+
+	// Report results
+	if len(importErrors) > 0 {
+		log.WarningLog.Printf("Import errors: %v", importErrors)
+		if importedCount == 0 {
+			return m, m.handleError(fmt.Errorf("failed to import any sessions"))
+		}
+		return m, m.handleError(fmt.Errorf("imported %d session(s), %d failed", importedCount, len(importErrors)))
+	}
+
+	// Show success message via error box (it's just a message display)
+	m.errBox.SetError(fmt.Errorf("imported %d orphaned session(s)", importedCount))
+	return m, tea.Batch(
+		tea.WindowSize(),
+		m.instanceChanged(),
+		func() tea.Msg {
+			time.Sleep(3 * time.Second)
+			return hideErrMsg{}
+		},
+	)
 }
 
 func (m *home) View() string {
