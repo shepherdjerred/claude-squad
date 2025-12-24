@@ -70,7 +70,7 @@ export default function Home() {
             <CopyButton textToCopy="curl -fsSL https://raw.githubusercontent.com/stmg-ai/claude-squad/main/install.sh | bash" />
           </div>
           <p className={styles.prerequisites}>
-            Prerequisites: tmux, gh (GitHub CLI)
+            Prerequisites: zellij, gh (GitHub CLI)
           </p>
         </div>
         

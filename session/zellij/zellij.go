@@ -97,7 +97,6 @@ func (z *ZellijSession) Start(workDir string) error {
 	}
 
 	// Create a temporary layout file that runs the program
-	// This is the Zellij equivalent of tmux's "new-session -d -s name command"
 	// KDL format for Zellij layouts
 	layoutContent := fmt.Sprintf(`layout {
     pane {

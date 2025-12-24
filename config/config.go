@@ -9,7 +9,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 )
 
@@ -37,8 +36,8 @@ type Config struct {
 	DaemonPollInterval int `json:"daemon_poll_interval"`
 	// BranchPrefix is the prefix used for git branches created by the application.
 	BranchPrefix string `json:"branch_prefix"`
-	// Multiplexer is the terminal multiplexer to use ("tmux" or "zellij").
-	// Defaults to "zellij" on Unix, "tmux" on Windows.
+	// Multiplexer is the terminal multiplexer to use.
+	// Deprecated: Only "zellij" is now supported. This field is kept for backwards compatibility.
 	Multiplexer string `json:"multiplexer"`
 }
 
@@ -48,12 +47,6 @@ func DefaultConfig() *Config {
 	if err != nil {
 		log.ErrorLog.Printf("failed to get claude command: %v", err)
 		program = defaultProgram
-	}
-
-	// Default to zellij on Unix, tmux on Windows
-	multiplexer := "zellij"
-	if runtime.GOOS == "windows" {
-		multiplexer = "tmux"
 	}
 
 	return &Config{
@@ -68,7 +61,7 @@ func DefaultConfig() *Config {
 			}
 			return fmt.Sprintf("%s/", strings.ToLower(user.Username))
 		}(),
-		Multiplexer: multiplexer,
+		Multiplexer: "zellij",
 	}
 }
 

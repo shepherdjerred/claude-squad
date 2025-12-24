@@ -1,8 +1,7 @@
 package session
 
 // Multiplexer defines the interface for terminal multiplexer sessions.
-// This abstraction allows claude-squad to support different terminal multiplexers
-// like tmux and Zellij.
+// This abstraction allows claude-squad to use Zellij for terminal session management.
 type Multiplexer interface {
 	// Start creates and starts a new session with the given working directory.
 	// The program to run is configured during construction.
@@ -16,7 +15,7 @@ type Multiplexer interface {
 	Attach() (chan struct{}, error)
 
 	// Detach disconnects from the current session.
-	// Panics if detaching fails (for tmux compatibility).
+	// Panics if detaching fails. Must be called while attached.
 	Detach()
 
 	// DetachSafely disconnects from the current session without panicking.

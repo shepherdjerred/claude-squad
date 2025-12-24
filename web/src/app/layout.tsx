@@ -22,7 +22,7 @@ export const viewport: Viewport = {
 export const metadata: Metadata = {
   title: "Claude Squad - Manage Multiple AI Code Assistants",
   description: "A terminal app that manages multiple AI code assistants (Claude Code, Codex, Aider, etc.) in separate workspaces, allowing you to work on multiple tasks simultaneously.",
-  keywords: ["claude", "claude squad", "ai", "code assistant", "terminal", "tmux", "claude code", "codex", "aider"],
+  keywords: ["claude", "claude squad", "ai", "code assistant", "terminal", "zellij", "claude code", "codex", "aider"],
   authors: [{ name: "smtg-ai" }],
   openGraph: {
     title: "Claude Squad",
