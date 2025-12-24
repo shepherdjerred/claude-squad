@@ -398,6 +398,21 @@ func (i *Instance) SetTitle(title string) error {
 	return nil
 }
 
+// Rename changes the display title of the instance. Unlike SetTitle, this can be called
+// after the instance has started. Note that this only changes the display name - the
+// underlying session name and git worktree path remain unchanged.
+func (i *Instance) Rename(newTitle string) error {
+	if newTitle == "" {
+		return fmt.Errorf("title cannot be empty")
+	}
+	if len(newTitle) > 32 {
+		return fmt.Errorf("title cannot be longer than 32 characters")
+	}
+	i.Title = newTitle
+	i.UpdatedAt = time.Now()
+	return nil
+}
+
 func (i *Instance) Paused() bool {
 	return i.Status == Paused
 }
