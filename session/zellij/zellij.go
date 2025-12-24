@@ -106,7 +106,9 @@ func (z *ZellijSession) Start(workDir string) error {
 	// Create session with the layout
 	// Using --new-session-with-layout creates a new session without attaching
 	// We run it in the background by spawning and immediately returning
-	startCmd := exec.Command("zellij", "--session", z.sanitizedName, "--new-session-with-layout", layoutFile, "options", "--attach-to-session", "false")
+	// Disable startup tips and release notes to speed up session creation
+	startCmd := exec.Command("zellij", "--session", z.sanitizedName, "--new-session-with-layout", layoutFile,
+		"options", "--attach-to-session", "false", "--show-startup-tips", "false", "--show-release-notes", "false")
 
 	// Clear Zellij environment variables to prevent nesting issues
 	// when creating a session from within an existing Zellij session
@@ -133,11 +135,8 @@ func (z *ZellijSession) Start(workDir string) error {
 		return fmt.Errorf("error creating zellij session: %w", err)
 	}
 
-	// Don't wait for the command to finish, it's running the session
-	// Just give it a moment to start
-	time.Sleep(500 * time.Millisecond)
-
 	// Wait for session to exist with exponential backoff
+	// No need for initial sleep - the polling loop handles waiting efficiently
 	timeout := time.After(5 * time.Second)
 	sleepDuration := 10 * time.Millisecond
 	for !z.DoesSessionExist() {
@@ -152,46 +151,52 @@ func (z *ZellijSession) Start(workDir string) error {
 		}
 	}
 
-	// Small delay to ensure session is ready
-	time.Sleep(100 * time.Millisecond)
-
 	// Now restore (attach PTY) for monitoring
 	if err := z.Restore(); err != nil {
 		z.Close()
 		return fmt.Errorf("error restoring zellij session: %w", err)
 	}
 
-	// Handle trust screen for Claude/Aider/Gemini
-	if strings.HasSuffix(z.program, ProgramClaude) || strings.HasSuffix(z.program, ProgramAider) || strings.HasSuffix(z.program, ProgramGemini) {
-		searchString := "Do you trust the files in this folder?"
-		tapFunc := z.TapEnter
-		maxWaitTime := 30 * time.Second
-		if !strings.HasSuffix(z.program, ProgramClaude) {
-			searchString = "Open documentation url for more info"
-			tapFunc = z.TapDAndEnter
-			maxWaitTime = 45 * time.Second
-		}
-
-		startTime := time.Now()
-		sleepDuration := 100 * time.Millisecond
-
-		for time.Since(startTime) < maxWaitTime {
-			time.Sleep(sleepDuration)
-			content, err := z.CapturePaneContent()
-			if err == nil && strings.Contains(content, searchString) {
-				if err := tapFunc(); err != nil {
-					log.ErrorLog.Printf("could not tap enter on trust screen: %v", err)
-				}
-				break
-			}
-			sleepDuration = time.Duration(float64(sleepDuration) * 1.2)
-			if sleepDuration > time.Second {
-				sleepDuration = time.Second
-			}
-		}
-	}
+	// Handle trust screen in background to avoid blocking session creation
+	// This speeds up session creation significantly (from 30-45s to <1s)
+	go z.handleTrustScreen()
 
 	return nil
+}
+
+// handleTrustScreen handles the "Do you trust the files?" prompt in the background.
+// This runs asynchronously to avoid blocking session creation.
+func (z *ZellijSession) handleTrustScreen() {
+	if !strings.HasSuffix(z.program, ProgramClaude) && !strings.HasSuffix(z.program, ProgramAider) && !strings.HasSuffix(z.program, ProgramGemini) {
+		return
+	}
+
+	searchString := "Do you trust the files in this folder?"
+	tapFunc := z.TapEnter
+	maxWaitTime := 30 * time.Second
+	if !strings.HasSuffix(z.program, ProgramClaude) {
+		searchString = "Open documentation url for more info"
+		tapFunc = z.TapDAndEnter
+		maxWaitTime = 45 * time.Second
+	}
+
+	startTime := time.Now()
+	sleepDuration := 100 * time.Millisecond
+
+	for time.Since(startTime) < maxWaitTime {
+		time.Sleep(sleepDuration)
+		content, err := z.CapturePaneContent()
+		if err == nil && strings.Contains(content, searchString) {
+			if err := tapFunc(); err != nil {
+				log.ErrorLog.Printf("could not tap enter on trust screen: %v", err)
+			}
+			return
+		}
+		sleepDuration = time.Duration(float64(sleepDuration) * 1.2)
+		if sleepDuration > time.Second {
+			sleepDuration = time.Second
+		}
+	}
 }
 
 // Restore sets up the PTY for an existing session.
