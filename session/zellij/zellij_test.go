@@ -5,7 +5,9 @@ import (
 	"claude-squad/log"
 	"crypto/sha256"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -363,4 +365,52 @@ func TestCleanupSessionsNoClaudeSquadSessions(t *testing.T) {
 func TestZellijPrefix(t *testing.T) {
 	// Verify the prefix constant
 	require.Equal(t, "claudesquad_", ZellijPrefix)
+}
+
+func TestReadCaptureFileWithRetry_Success(t *testing.T) {
+	tmpFile := filepath.Join(os.TempDir(), "test_capture_success.txt")
+	defer os.Remove(tmpFile)
+
+	err := os.WriteFile(tmpFile, []byte("test content"), 0644)
+	require.NoError(t, err)
+
+	content, err := readCaptureFileWithRetry(tmpFile)
+	require.NoError(t, err)
+	require.Equal(t, "test content", string(content))
+}
+
+func TestReadCaptureFileWithRetry_FileNotExist(t *testing.T) {
+	content, err := readCaptureFileWithRetry("/nonexistent/file.txt")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "failed to read capture file after")
+	require.Contains(t, err.Error(), "does not exist")
+	require.Nil(t, content)
+}
+
+func TestReadCaptureFileWithRetry_EmptyFile(t *testing.T) {
+	tmpFile := filepath.Join(os.TempDir(), "test_empty_capture.txt")
+	defer os.Remove(tmpFile)
+
+	err := os.WriteFile(tmpFile, []byte{}, 0644)
+	require.NoError(t, err)
+
+	content, err := readCaptureFileWithRetry(tmpFile)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "capture file is empty")
+	require.Nil(t, content)
+}
+
+func TestReadCaptureFileWithRetry_DelayedWrite(t *testing.T) {
+	tmpFile := filepath.Join(os.TempDir(), "test_delayed_capture.txt")
+	defer os.Remove(tmpFile)
+
+	// Simulate delayed file creation
+	go func() {
+		time.Sleep(15 * time.Millisecond)
+		os.WriteFile(tmpFile, []byte("delayed content"), 0644)
+	}()
+
+	content, err := readCaptureFileWithRetry(tmpFile)
+	require.NoError(t, err)
+	require.Equal(t, "delayed content", string(content))
 }
