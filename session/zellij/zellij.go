@@ -231,6 +231,9 @@ func (z *ZellijSession) Attach() (chan struct{}, error) {
 		_ = z.SetDetachedSize(cols, rows)
 	}
 
+	// Show a hint to the user about how to detach
+	fmt.Fprintf(os.Stdout, "\033[90m--- Press Ctrl+Q to detach ---\033[0m\n")
+
 	// Goroutine to copy output from PTY to stdout
 	go func() {
 		defer z.wg.Done()
