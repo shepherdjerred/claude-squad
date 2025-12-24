@@ -1,6 +1,7 @@
 package session
 
 import (
+	"claude-squad/config"
 	"claude-squad/log"
 	"claude-squad/session/git"
 	"claude-squad/session/zellij"
@@ -72,12 +73,22 @@ type Instance struct {
 	// This is captured from Claude's project files after Claude starts.
 	ClaudeSessionID string
 
+	// SessionType indicates the type of session: "zellij", "docker-bind", or "docker-clone"
+	SessionType string
+	// DockerContainerID is the Docker container ID for Docker sessions
+	DockerContainerID string
+	// DockerRepoURL is the git repo URL for docker-clone mode
+	DockerRepoURL string
+	// DockerBaseImage is the Docker base image used for this session
+	DockerBaseImage string
+
 	// The below fields are initialized upon calling Start().
 
 	started bool
 	// session is the multiplexer session for the instance.
 	session Multiplexer
 	// multiplexerType is the type of multiplexer used for this instance.
+	// Deprecated: Use SessionType instead.
 	multiplexerType MultiplexerType
 	// gitWorktree is the git worktree for the instance.
 	gitWorktree *git.GitWorktree
@@ -86,22 +97,25 @@ type Instance struct {
 // ToInstanceData converts an Instance to its serializable form
 func (i *Instance) ToInstanceData() InstanceData {
 	data := InstanceData{
-		Title:            i.Title,
-		Path:             i.Path,
-		Branch:           i.Branch,
-		Status:           i.Status,
-		Height:           i.Height,
-		Width:            i.Width,
-		CreatedAt:        i.CreatedAt,
-		UpdatedAt:        time.Now(),
-		LastOpenedAt:     i.LastOpenedAt,
-		Program:          i.Program,
-		AutoYes:          i.AutoYes,
-		Archived:         i.Archived,
-		Multiplexer:      string(i.multiplexerType),
-		Summary:          i.Summary,
-		SummaryUpdatedAt: i.SummaryUpdatedAt,
-		ClaudeSessionID:  i.ClaudeSessionID,
+		Title:             i.Title,
+		Path:              i.Path,
+		Branch:            i.Branch,
+		Status:            i.Status,
+		Height:            i.Height,
+		Width:             i.Width,
+		CreatedAt:         i.CreatedAt,
+		UpdatedAt:         time.Now(),
+		LastOpenedAt:      i.LastOpenedAt,
+		Program:           i.Program,
+		AutoYes:           i.AutoYes,
+		Archived:          i.Archived,
+		Multiplexer:       string(i.multiplexerType),
+		Summary:           i.Summary,
+		SummaryUpdatedAt:  i.SummaryUpdatedAt,
+		ClaudeSessionID:   i.ClaudeSessionID,
+		SessionType:       i.SessionType,
+		DockerContainerID: i.DockerContainerID,
+		DockerRepoURL:     i.DockerRepoURL,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -169,13 +183,14 @@ func NewInstanceFromOrphan(orphan *zellij.OrphanedSession) (*Instance, error) {
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		AutoYes:         false,
-		multiplexerType: MultiplexerZellij, // Orphaned sessions are always Zellij
+		SessionType:     config.SessionTypeZellij, // Orphaned sessions are always Zellij
+		multiplexerType: MultiplexerZellij,
 		gitWorktree:     gitWorktree,
 	}
 
 	// Create Zellij session and restore connection to existing session
 	// Use the session name from gitWorktree for consistency
-	session := NewMultiplexer(MultiplexerZellij, instance.gitWorktree.GetSessionName(), instance.Program)
+	session := NewMultiplexer(config.SessionTypeZellij, instance.gitWorktree.GetSessionName(), instance.Program, MultiplexerOptions{})
 	instance.session = session
 
 	// Restore connection to existing session
@@ -190,32 +205,32 @@ func NewInstanceFromOrphan(orphan *zellij.OrphanedSession) (*Instance, error) {
 
 // FromInstanceData creates a new Instance from serialized data
 func FromInstanceData(data InstanceData) (*Instance, error) {
-	// Always use zellij (stored multiplexer type is ignored for backwards compatibility)
+	// For backwards compatibility, default to zellij if no session type
+	sessionType := data.SessionType
+	if sessionType == "" {
+		sessionType = config.SessionTypeZellij
+	}
 	mtype := MultiplexerZellij
 
 	instance := &Instance{
-		Title:            data.Title,
-		Path:             data.Path,
-		Branch:           data.Branch,
-		Status:           data.Status,
-		Height:           data.Height,
-		Width:            data.Width,
-		CreatedAt:        data.CreatedAt,
-		UpdatedAt:        data.UpdatedAt,
-		LastOpenedAt:     data.LastOpenedAt,
-		Program:          data.Program,
-		Archived:         data.Archived,
-		Summary:          data.Summary,
-		SummaryUpdatedAt: data.SummaryUpdatedAt,
-		ClaudeSessionID:  data.ClaudeSessionID,
-		multiplexerType:  mtype,
-		gitWorktree: git.NewGitWorktreeFromStorage(
-			data.Worktree.RepoPath,
-			data.Worktree.WorktreePath,
-			data.Worktree.SessionName,
-			data.Worktree.BranchName,
-			data.Worktree.BaseCommitSHA,
-		),
+		Title:             data.Title,
+		Path:              data.Path,
+		Branch:            data.Branch,
+		Status:            data.Status,
+		Height:            data.Height,
+		Width:             data.Width,
+		CreatedAt:         data.CreatedAt,
+		UpdatedAt:         data.UpdatedAt,
+		LastOpenedAt:      data.LastOpenedAt,
+		Program:           data.Program,
+		Archived:          data.Archived,
+		Summary:           data.Summary,
+		SummaryUpdatedAt:  data.SummaryUpdatedAt,
+		ClaudeSessionID:   data.ClaudeSessionID,
+		SessionType:       sessionType,
+		DockerContainerID: data.DockerContainerID,
+		DockerRepoURL:     data.DockerRepoURL,
+		multiplexerType:   mtype,
 		diffStats: &git.DiffStats{
 			Added:   data.DiffStats.Added,
 			Removed: data.DiffStats.Removed,
@@ -223,11 +238,29 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		},
 	}
 
+	// For Docker clone mode, we may not have a worktree
+	if data.Worktree.WorktreePath != "" || sessionType != config.SessionTypeDockerClone {
+		instance.gitWorktree = git.NewGitWorktreeFromStorage(
+			data.Worktree.RepoPath,
+			data.Worktree.WorktreePath,
+			data.Worktree.SessionName,
+			data.Worktree.BranchName,
+			data.Worktree.BaseCommitSHA,
+		)
+	}
+
 	if instance.Paused() || instance.Archived {
 		instance.started = true
-		// Use the original session name from gitWorktree, not the display title,
-		// to correctly reconnect to existing multiplexer sessions after rename
-		instance.session = NewMultiplexer(mtype, instance.gitWorktree.GetSessionName(), instance.Program)
+		// Create session based on session type
+		sessionName := data.Title
+		if instance.gitWorktree != nil {
+			sessionName = instance.gitWorktree.GetSessionName()
+		}
+		instance.session = NewMultiplexer(sessionType, sessionName, instance.Program, MultiplexerOptions{
+			BaseImage:  instance.DockerBaseImage,
+			RepoURL:    instance.DockerRepoURL,
+			BranchName: instance.Branch,
+		})
 	} else {
 		if err := instance.Start(false); err != nil {
 			return nil, err
@@ -247,9 +280,15 @@ type InstanceOptions struct {
 	Program string
 	// If AutoYes is true, then
 	AutoYes bool
-	// Multiplexer is deprecated and ignored. Zellij is always used.
+	// Multiplexer is deprecated and ignored. Use SessionType instead.
 	// This field is kept for backwards compatibility.
 	Multiplexer string
+	// SessionType indicates the type of session: "zellij", "docker-bind", or "docker-clone"
+	SessionType string
+	// DockerBaseImage is the Docker base image for Docker sessions (e.g., "ubuntu:24.04")
+	DockerBaseImage string
+	// DockerRepoURL is the git repo URL for docker-clone mode
+	DockerRepoURL string
 }
 
 func NewInstance(opts InstanceOptions) (*Instance, error) {
@@ -261,7 +300,13 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	// Always use zellij (options.Multiplexer is ignored for backwards compatibility)
+	// Default to zellij if no session type specified
+	sessionType := opts.SessionType
+	if sessionType == "" {
+		sessionType = config.SessionTypeZellij
+	}
+
+	// For backwards compatibility, set multiplexerType based on session type
 	muxType := MultiplexerZellij
 
 	return &Instance{
@@ -273,8 +318,11 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		Width:           0,
 		CreatedAt:       t,
 		UpdatedAt:       t,
-		AutoYes:         false,
+		AutoYes:         opts.AutoYes,
 		multiplexerType: muxType,
+		SessionType:     sessionType,
+		DockerBaseImage: opts.DockerBaseImage,
+		DockerRepoURL:   opts.DockerRepoURL,
 	}, nil
 }
 
@@ -306,12 +354,19 @@ func (i *Instance) startInternal(firstTimeSetup bool, progressCallback git.Progr
 		return fmt.Errorf("instance title cannot be empty")
 	}
 
-	// Always use zellij
+	// Default session type to zellij for backwards compatibility
+	if i.SessionType == "" {
+		i.SessionType = config.SessionTypeZellij
+	}
 	if i.multiplexerType == "" {
 		i.multiplexerType = MultiplexerZellij
 	}
 
-	if firstTimeSetup {
+	// For Docker clone mode, we skip worktree setup (repo is cloned inside container)
+	isDockerClone := i.SessionType == config.SessionTypeDockerClone
+
+	if firstTimeSetup && !isDockerClone {
+		// Create git worktree for Zellij and Docker bind-mount modes
 		gitWorktree, branchName, err := git.NewGitWorktree(i.Path, i.Title)
 		if err != nil {
 			return fmt.Errorf("failed to create git worktree: %w", err)
@@ -322,18 +377,31 @@ func (i *Instance) startInternal(firstTimeSetup bool, progressCallback git.Progr
 		if progressCallback != nil {
 			i.gitWorktree.SetProgressCallback(progressCallback)
 		}
+	} else if firstTimeSetup && isDockerClone {
+		// For Docker clone mode, just set up the branch name
+		// The repo will be cloned inside the container
+		i.Branch = i.Title // Branch name will be the instance title
 	}
 
-	// Create the multiplexer session after gitWorktree is set up, so we can use the
-	// correct session name. For firstTimeSetup, gitWorktree was just created with i.Title.
-	// For restore (loading from storage), gitWorktree already has the original session name.
+	// Create the multiplexer session
 	var session Multiplexer
 	if i.session != nil {
 		// Use existing session (useful for testing)
 		session = i.session
 	} else {
-		// Create new session using factory with the session name from gitWorktree
-		session = NewMultiplexer(i.multiplexerType, i.gitWorktree.GetSessionName(), i.Program)
+		// Determine session name
+		sessionName := i.Title
+		if i.gitWorktree != nil {
+			sessionName = i.gitWorktree.GetSessionName()
+		}
+
+		// Create new session using factory
+		session = NewMultiplexer(i.SessionType, sessionName, i.Program, MultiplexerOptions{
+			BaseImage:  i.DockerBaseImage,
+			RepoURL:    i.DockerRepoURL,
+			BranchName: i.Branch,
+			WorkDir:    i.Path,
+		})
 	}
 	i.session = session
 
@@ -356,10 +424,13 @@ func (i *Instance) startInternal(firstTimeSetup bool, progressCallback git.Progr
 			return setupErr
 		}
 	} else {
-		// Setup git worktree first
-		if err := i.gitWorktree.Setup(); err != nil {
-			setupErr = fmt.Errorf("failed to setup git worktree: %w", err)
-			return setupErr
+		// For Docker clone mode, we don't have a git worktree - repo is cloned inside container
+		if i.gitWorktree != nil {
+			// Setup git worktree for Zellij and Docker bind-mount modes
+			if err := i.gitWorktree.Setup(); err != nil {
+				setupErr = fmt.Errorf("failed to setup git worktree: %w", err)
+				return setupErr
+			}
 		}
 
 		// Report progress for session start
@@ -367,11 +438,19 @@ func (i *Instance) startInternal(firstTimeSetup bool, progressCallback git.Progr
 			progressCallback("Starting terminal session...")
 		}
 
+		// Determine work directory for the session
+		workDir := i.Path
+		if i.gitWorktree != nil {
+			workDir = i.gitWorktree.GetWorktreePath()
+		}
+
 		// Create new session
-		if err := i.session.Start(i.gitWorktree.GetWorktreePath()); err != nil {
+		if err := i.session.Start(workDir); err != nil {
 			// Cleanup git worktree if session creation fails
-			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
-				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+			if i.gitWorktree != nil {
+				if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
+					err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+				}
 			}
 			setupErr = fmt.Errorf("failed to start new session: %w", err)
 			return setupErr
@@ -730,8 +809,19 @@ func (i *Instance) SendKeys(keys string) error {
 }
 
 // GetMultiplexerType returns the type of multiplexer used for this instance
+// Deprecated: Use GetSessionType instead.
 func (i *Instance) GetMultiplexerType() MultiplexerType {
 	return i.multiplexerType
+}
+
+// GetSessionType returns the session type for this instance.
+func (i *Instance) GetSessionType() string {
+	return i.SessionType
+}
+
+// IsDockerSession returns true if this instance uses a Docker session.
+func (i *Instance) IsDockerSession() bool {
+	return i.SessionType == config.SessionTypeDockerBind || i.SessionType == config.SessionTypeDockerClone
 }
 
 // CheckAndRestartProgram checks if the program needs to be restarted and does so if possible.

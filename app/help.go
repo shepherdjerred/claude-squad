@@ -1,6 +1,7 @@
 package app
 
 import (
+	"claude-squad/config"
 	"claude-squad/log"
 	"claude-squad/session"
 	"claude-squad/ui"
@@ -62,14 +63,36 @@ func (h helpTypeGeneral) toContent() string {
 }
 
 func (h helpTypeInstanceStart) toContent() string {
+	// Determine session environment description based on session type
+	var envDesc string
+	switch h.instance.GetSessionType() {
+	case config.SessionTypeDockerBind:
+		envDesc = fmt.Sprintf("• %s running in Docker container (bind-mount)",
+			lipgloss.NewStyle().Bold(true).Render(h.instance.Program))
+	case config.SessionTypeDockerClone:
+		envDesc = fmt.Sprintf("• %s running in Docker container (cloned repo)",
+			lipgloss.NewStyle().Bold(true).Render(h.instance.Program))
+	default:
+		envDesc = fmt.Sprintf("• %s running in background Zellij session",
+			lipgloss.NewStyle().Bold(true).Render(h.instance.Program))
+	}
+
+	// Determine git branch description based on session type
+	var branchDesc string
+	if h.instance.GetSessionType() == config.SessionTypeDockerClone {
+		branchDesc = fmt.Sprintf("• Git branch: %s (inside container)",
+			lipgloss.NewStyle().Bold(true).Render(h.instance.Branch))
+	} else {
+		branchDesc = fmt.Sprintf("• Git branch: %s (isolated worktree)",
+			lipgloss.NewStyle().Bold(true).Render(h.instance.Branch))
+	}
+
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		titleStyle.Render("Instance Created"),
 		"",
 		descStyle.Render("New session created:"),
-		descStyle.Render(fmt.Sprintf("• Git branch: %s (isolated worktree)",
-			lipgloss.NewStyle().Bold(true).Render(h.instance.Branch))),
-		descStyle.Render(fmt.Sprintf("• %s running in background zellij session",
-			lipgloss.NewStyle().Bold(true).Render(h.instance.Program))),
+		descStyle.Render(branchDesc),
+		descStyle.Render(envDesc),
 		"",
 		headerStyle.Render("Managing:"),
 		keyStyle.Render("↵/o")+descStyle.Render("   - Attach to the session to interact with it directly"),

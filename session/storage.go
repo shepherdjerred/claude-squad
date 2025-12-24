@@ -31,6 +31,15 @@ type InstanceData struct {
 
 	// ClaudeSessionID is the Claude CLI session ID for resuming conversations after restart
 	ClaudeSessionID string `json:"claude_session_id,omitempty"`
+
+	// SessionType indicates the session type: "zellij", "docker-bind", or "docker-clone"
+	SessionType string `json:"session_type,omitempty"`
+
+	// DockerContainerID is the Docker container ID for Docker sessions
+	DockerContainerID string `json:"docker_container_id,omitempty"`
+
+	// DockerRepoURL is the git repo URL for docker-clone mode
+	DockerRepoURL string `json:"docker_repo_url,omitempty"`
 }
 
 // GitWorktreeData represents the serializable data of a GitWorktree
