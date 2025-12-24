@@ -93,7 +93,8 @@ func (s *Summarizer) generateSummary(instance *Instance) error {
 	}
 
 	// Truncate content if it's too long (keep last part which is more relevant)
-	const maxContentLen = 4000
+	// Keep this small to minimize Claude API costs
+	const maxContentLen = 200
 	if len(content) > maxContentLen {
 		content = content[len(content)-maxContentLen:]
 	}

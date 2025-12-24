@@ -103,6 +103,9 @@ type home struct {
 
 	// summarizer handles generating AI summaries for instances
 	summarizer *session.Summarizer
+
+	// metadataUpdateInProgress prevents overlapping async metadata updates
+	metadataUpdateInProgress bool
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
@@ -223,23 +226,48 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}()
 		return m, nil
 	case tickUpdateMetadataMessage:
-		// Check if state file was modified by another process and sync if needed
-		diskInstances, synced, err := m.storage.SyncFromDisk()
+		// Prevent overlapping updates
+		if m.metadataUpdateInProgress {
+			return m, tickUpdateMetadataCmd
+		}
+		m.metadataUpdateInProgress = true
+
+		// Capture state for async operation
+		instances := m.list.GetInstances()
+		storage := m.storage
+
+		// Check disk sync (fast operation, can do synchronously)
+		diskInstances, synced, err := storage.SyncFromDisk()
 		if err != nil {
 			log.WarningLog.Printf("failed to sync from disk: %v", err)
-		} else if synced && diskInstances != nil {
-			// Merge disk instances with in-memory instances
-			if m.list.MergeInstances(diskInstances) {
-				// If instances changed, update the UI
+		}
+
+		// Run expensive operations asynchronously
+		return m, tea.Batch(
+			func() tea.Msg {
+				updateResults := session.ParallelUpdate(instances)
+				diffErrors := session.ParallelUpdateDiffStats(instances)
+				return metadataUpdateResultMsg{
+					updateResults:  updateResults,
+					diffErrors:     diffErrors,
+					syncedFromDisk: synced,
+					diskInstances:  diskInstances,
+				}
+			},
+			tickUpdateMetadataCmd,
+		)
+	case metadataUpdateResultMsg:
+		m.metadataUpdateInProgress = false
+
+		// Handle disk sync results
+		if msg.syncedFromDisk && msg.diskInstances != nil {
+			if m.list.MergeInstances(msg.diskInstances) {
 				m.instanceChanged()
 			}
 		}
 
-		instances := m.list.GetInstances()
-
-		// Parallel update check - runs HasUpdated() concurrently
-		updateResults := session.ParallelUpdate(instances)
-		for _, result := range updateResults {
+		// Apply update results
+		for _, result := range msg.updateResults {
 			if result.Instance == nil {
 				continue
 			}
@@ -254,22 +282,32 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Parallel diff stats update
-		diffErrors := session.ParallelUpdateDiffStats(instances)
-		for i, err := range diffErrors {
-			if err != nil && instances[i] != nil {
+		// Log diff errors
+		for _, err := range msg.diffErrors {
+			if err != nil {
 				log.WarningLog.Printf("could not update diff stats: %v", err)
 			}
 		}
 
-		return m, tickUpdateMetadataCmd
+		return m, nil
 	case tickUpdateSummaryMessage:
-		// Update the next instance's summary (staggered)
+		// Update the next instance's summary asynchronously
 		instances := m.list.GetInstances()
-		if updated := m.summarizer.UpdateNextSummary(instances); updated != nil {
-			log.InfoLog.Printf("Updated summary for %s: %s", updated.Title, updated.Summary)
+		summarizer := m.summarizer
+		return m, tea.Batch(
+			func() tea.Msg {
+				if updated := summarizer.UpdateNextSummary(instances); updated != nil {
+					return summaryUpdateResultMsg{instance: updated, summary: updated.Summary}
+				}
+				return summaryUpdateResultMsg{}
+			},
+			tickUpdateSummaryCmd,
+		)
+	case summaryUpdateResultMsg:
+		if msg.instance != nil {
+			log.InfoLog.Printf("Updated summary for %s: %s", msg.instance.Title, msg.summary)
 		}
-		return m, tickUpdateSummaryCmd
+		return m, nil
 	case loadingProgressMsg:
 		if m.loadingOverlay != nil {
 			m.loadingOverlay.SetStatus(msg.status)
@@ -842,6 +880,20 @@ type tickUpdateMetadataMessage struct{}
 
 type tickUpdateSummaryMessage struct{}
 
+// summaryUpdateResultMsg carries results from async summary generation
+type summaryUpdateResultMsg struct {
+	instance *session.Instance
+	summary  string
+}
+
+// metadataUpdateResultMsg carries results from async metadata update
+type metadataUpdateResultMsg struct {
+	updateResults  []session.UpdateResult
+	diffErrors     []error
+	syncedFromDisk bool
+	diskInstances  []*session.Instance
+}
+
 type instanceChangedMsg struct{}
 
 // saveDebounceMsg is sent after a debounce delay to trigger a save
@@ -860,10 +912,10 @@ type loadingCompleteMsg struct {
 	err error
 }
 
-// tickUpdateMetadataCmd is the callback to update the metadata of the instances every 2 seconds.
+// tickUpdateMetadataCmd is the callback to update the metadata of the instances every 5 seconds.
 // Note that we iterate over all instances and capture their output. It's an expensive operation.
 var tickUpdateMetadataCmd = func() tea.Msg {
-	time.Sleep(2 * time.Second)
+	time.Sleep(5 * time.Second)
 	return tickUpdateMetadataMessage{}
 }
 
