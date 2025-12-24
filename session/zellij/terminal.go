@@ -221,68 +221,8 @@ func colorToANSI(c color.RGBA, foreground bool) string {
 		return ""
 	}
 
-	// Try to match to standard 16 colors first
-	baseCode := 30
-	if !foreground {
-		baseCode = 40
-	}
-
-	// Check for basic colors (comparing RGB values)
-	// Black
-	if c.R == 0 && c.G == 0 && c.B == 0 && c.A == 255 {
-		return fmt.Sprintf("%d", baseCode+0)
-	}
-	// Red
-	if c.R >= 128 && c.G < 128 && c.B < 128 {
-		if c.R >= 200 {
-			return fmt.Sprintf("%d", baseCode+60+1) // Bright red
-		}
-		return fmt.Sprintf("%d", baseCode+1)
-	}
-	// Green
-	if c.G >= 128 && c.R < 128 && c.B < 128 {
-		if c.G >= 200 {
-			return fmt.Sprintf("%d", baseCode+60+2) // Bright green
-		}
-		return fmt.Sprintf("%d", baseCode+2)
-	}
-	// Yellow (red + green)
-	if c.R >= 128 && c.G >= 128 && c.B < 128 {
-		if c.R >= 200 && c.G >= 200 {
-			return fmt.Sprintf("%d", baseCode+60+3) // Bright yellow
-		}
-		return fmt.Sprintf("%d", baseCode+3)
-	}
-	// Blue
-	if c.B >= 128 && c.R < 128 && c.G < 128 {
-		if c.B >= 200 {
-			return fmt.Sprintf("%d", baseCode+60+4) // Bright blue
-		}
-		return fmt.Sprintf("%d", baseCode+4)
-	}
-	// Magenta (red + blue)
-	if c.R >= 128 && c.B >= 128 && c.G < 128 {
-		if c.R >= 200 && c.B >= 200 {
-			return fmt.Sprintf("%d", baseCode+60+5) // Bright magenta
-		}
-		return fmt.Sprintf("%d", baseCode+5)
-	}
-	// Cyan (green + blue)
-	if c.G >= 128 && c.B >= 128 && c.R < 128 {
-		if c.G >= 200 && c.B >= 200 {
-			return fmt.Sprintf("%d", baseCode+60+6) // Bright cyan
-		}
-		return fmt.Sprintf("%d", baseCode+6)
-	}
-	// White / light gray
-	if c.R >= 128 && c.G >= 128 && c.B >= 128 {
-		if c.R >= 200 && c.G >= 200 && c.B >= 200 {
-			return fmt.Sprintf("%d", baseCode+60+7) // Bright white
-		}
-		return fmt.Sprintf("%d", baseCode+7)
-	}
-
-	// Fall back to 24-bit color (true color)
+	// Use 24-bit true color for accurate color representation
+	// Modern terminals support this and it avoids incorrect color mapping
 	if foreground {
 		return fmt.Sprintf("38;2;%d;%d;%d", c.R, c.G, c.B)
 	}

@@ -242,12 +242,20 @@ func (l *List) adjustScroll() {
 // SetSessionPreviewSize sets the height and width for the multiplexer sessions. This makes the stdout line have the correct
 // width and height.
 func (l *List) SetSessionPreviewSize(width, height int) (err error) {
+	// Reduce width slightly to account for ANSI escape codes
+	// When lipgloss renders content with width constraints, it counts ANSI codes as characters
+	// So we need to size the terminal buffer smaller to prevent wrapping
+	adjustedWidth := width - 2
+	if adjustedWidth < 1 {
+		adjustedWidth = 1
+	}
+
 	for i, item := range l.items {
 		if !item.Started() || item.Paused() {
 			continue
 		}
 
-		if innerErr := item.SetPreviewSize(width, height); innerErr != nil {
+		if innerErr := item.SetPreviewSize(adjustedWidth, height); innerErr != nil {
 			err = errors.Join(
 				err, fmt.Errorf("could not set preview size for instance %d: %v", i, innerErr))
 		}
