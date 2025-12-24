@@ -65,6 +65,7 @@ type ZellijSession struct {
 
 	// Initialized by Attach, deinitialized by Detach
 	attachCh chan struct{}
+	detachCh chan struct{} // Signals detach request from stdin goroutine
 	ctx      context.Context
 	cancel   func()
 	wg       *sync.WaitGroup
@@ -288,6 +289,7 @@ func (z *ZellijSession) Attach() (chan struct{}, error) {
 	z.stopPTYReader()
 
 	z.attachCh = make(chan struct{})
+	z.detachCh = make(chan struct{})
 	z.wg = &sync.WaitGroup{}
 	z.wg.Add(1)
 	z.ctx, z.cancel = context.WithCancel(context.Background())
@@ -344,7 +346,12 @@ func (z *ZellijSession) Attach() (chan struct{}, error) {
 
 			// Check for Ctrl+q (ASCII 17)
 			if nr == 1 && buf[0] == 17 {
-				z.Detach()
+				// Signal detach request instead of calling Detach() directly
+				// to avoid deadlock
+				select {
+				case z.detachCh <- struct{}{}:
+				default:
+				}
 				return
 			}
 
@@ -353,6 +360,13 @@ func (z *ZellijSession) Attach() (chan struct{}, error) {
 	}()
 
 	z.monitorWindowSize()
+
+	// Start goroutine to handle detach requests
+	go func() {
+		<-z.detachCh
+		z.Detach()
+	}()
+
 	return z.attachCh, nil
 }
 
@@ -361,6 +375,10 @@ func (z *ZellijSession) Detach() {
 	defer func() {
 		close(z.attachCh)
 		z.attachCh = nil
+		if z.detachCh != nil {
+			close(z.detachCh)
+			z.detachCh = nil
+		}
 		z.cancel = nil
 		z.ctx = nil
 		z.wg = nil
