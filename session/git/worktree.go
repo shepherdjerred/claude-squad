@@ -34,6 +34,11 @@ type GitWorktree struct {
 	baseCommitSHA string
 	// Progress callback for status updates
 	progressCallback ProgressCallback
+
+	// Diff caching
+	cachedDiffStats   *DiffStats
+	diffCacheTime     time.Time
+	diffCacheDuration time.Duration
 }
 
 func NewGitWorktreeFromStorage(repoPath string, worktreePath string, sessionName string, branchName string, baseCommitSHA string) *GitWorktree {
@@ -107,6 +112,13 @@ func (g *GitWorktree) GetRepoName() string {
 // GetBaseCommitSHA returns the base commit SHA for the worktree
 func (g *GitWorktree) GetBaseCommitSHA() string {
 	return g.baseCommitSHA
+}
+
+// GetSessionName returns the session name for this worktree.
+// This is the original name used to create the multiplexer session and should
+// not change when the instance is renamed.
+func (g *GitWorktree) GetSessionName() string {
+	return g.sessionName
 }
 
 // SetProgressCallback sets the callback function for progress updates

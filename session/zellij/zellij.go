@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/term"
 )
 
 const (
@@ -27,6 +28,12 @@ const (
 )
 
 const ZellijPrefix = "claudesquad_"
+
+const (
+	captureFileMaxRetries   = 3
+	captureFileInitialDelay = 5 * time.Millisecond
+	captureFileMaxDelay     = 100 * time.Millisecond
+)
 
 var whiteSpaceRegex = regexp.MustCompile(`\s+`)
 var ansiEscapeRegex = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -105,7 +112,9 @@ func (z *ZellijSession) Start(workDir string) error {
 	// Create session with the layout
 	// Using --new-session-with-layout creates a new session without attaching
 	// We run it in the background by spawning and immediately returning
-	startCmd := exec.Command("zellij", "--session", z.sanitizedName, "--new-session-with-layout", layoutFile, "options", "--attach-to-session", "false")
+	// Disable startup tips and release notes to speed up session creation
+	startCmd := exec.Command("zellij", "--session", z.sanitizedName, "--new-session-with-layout", layoutFile,
+		"options", "--attach-to-session", "false", "--show-startup-tips", "false", "--show-release-notes", "false")
 
 	// Clear Zellij environment variables to prevent nesting issues
 	// when creating a session from within an existing Zellij session
@@ -132,11 +141,8 @@ func (z *ZellijSession) Start(workDir string) error {
 		return fmt.Errorf("error creating zellij session: %w", err)
 	}
 
-	// Don't wait for the command to finish, it's running the session
-	// Just give it a moment to start
-	time.Sleep(500 * time.Millisecond)
-
 	// Wait for session to exist with exponential backoff
+	// No need for initial sleep - the polling loop handles waiting efficiently
 	timeout := time.After(5 * time.Second)
 	sleepDuration := 10 * time.Millisecond
 	for !z.DoesSessionExist() {
@@ -151,46 +157,52 @@ func (z *ZellijSession) Start(workDir string) error {
 		}
 	}
 
-	// Small delay to ensure session is ready
-	time.Sleep(100 * time.Millisecond)
-
 	// Now restore (attach PTY) for monitoring
 	if err := z.Restore(); err != nil {
 		z.Close()
 		return fmt.Errorf("error restoring zellij session: %w", err)
 	}
 
-	// Handle trust screen for Claude/Aider/Gemini
-	if strings.HasSuffix(z.program, ProgramClaude) || strings.HasSuffix(z.program, ProgramAider) || strings.HasSuffix(z.program, ProgramGemini) {
-		searchString := "Do you trust the files in this folder?"
-		tapFunc := z.TapEnter
-		maxWaitTime := 30 * time.Second
-		if !strings.HasSuffix(z.program, ProgramClaude) {
-			searchString = "Open documentation url for more info"
-			tapFunc = z.TapDAndEnter
-			maxWaitTime = 45 * time.Second
-		}
-
-		startTime := time.Now()
-		sleepDuration := 100 * time.Millisecond
-
-		for time.Since(startTime) < maxWaitTime {
-			time.Sleep(sleepDuration)
-			content, err := z.CapturePaneContent()
-			if err == nil && strings.Contains(content, searchString) {
-				if err := tapFunc(); err != nil {
-					log.ErrorLog.Printf("could not tap enter on trust screen: %v", err)
-				}
-				break
-			}
-			sleepDuration = time.Duration(float64(sleepDuration) * 1.2)
-			if sleepDuration > time.Second {
-				sleepDuration = time.Second
-			}
-		}
-	}
+	// Handle trust screen in background to avoid blocking session creation
+	// This speeds up session creation significantly (from 30-45s to <1s)
+	go z.handleTrustScreen()
 
 	return nil
+}
+
+// handleTrustScreen handles the "Do you trust the files?" prompt in the background.
+// This runs asynchronously to avoid blocking session creation.
+func (z *ZellijSession) handleTrustScreen() {
+	if !strings.HasSuffix(z.program, ProgramClaude) && !strings.HasSuffix(z.program, ProgramAider) && !strings.HasSuffix(z.program, ProgramGemini) {
+		return
+	}
+
+	searchString := "Do you trust the files in this folder?"
+	tapFunc := z.TapEnter
+	maxWaitTime := 30 * time.Second
+	if !strings.HasSuffix(z.program, ProgramClaude) {
+		searchString = "Open documentation url for more info"
+		tapFunc = z.TapDAndEnter
+		maxWaitTime = 45 * time.Second
+	}
+
+	startTime := time.Now()
+	sleepDuration := 100 * time.Millisecond
+
+	for time.Since(startTime) < maxWaitTime {
+		time.Sleep(sleepDuration)
+		content, err := z.CapturePaneContent()
+		if err == nil && strings.Contains(content, searchString) {
+			if err := tapFunc(); err != nil {
+				log.ErrorLog.Printf("could not tap enter on trust screen: %v", err)
+			}
+			return
+		}
+		sleepDuration = time.Duration(float64(sleepDuration) * 1.2)
+		if sleepDuration > time.Second {
+			sleepDuration = time.Second
+		}
+	}
 }
 
 // Restore sets up the PTY for an existing session.
@@ -215,6 +227,17 @@ func (z *ZellijSession) Attach() (chan struct{}, error) {
 	z.wg = &sync.WaitGroup{}
 	z.wg.Add(1)
 	z.ctx, z.cancel = context.WithCancel(context.Background())
+
+	// Resize the PTY to fullscreen BEFORE starting I/O goroutines.
+	// This prevents content rendered at preview-pane size from being displayed
+	// when we start copying PTY output to stdout.
+	cols, rows, err := term.GetSize(int(os.Stdin.Fd()))
+	if err == nil {
+		_ = z.SetDetachedSize(cols, rows)
+	}
+
+	// Show a hint to the user about how to detach
+	fmt.Fprintf(os.Stdout, "\033[90m--- Press Ctrl+Q to detach ---\033[0m\n")
 
 	// Goroutine to copy output from PTY to stdout
 	go func() {
@@ -389,6 +412,57 @@ func (z *ZellijSession) TapDAndEnter() error {
 	return z.TapEnter()
 }
 
+// readCaptureFileWithRetry attempts to read the capture file with retries.
+// It waits for the file to exist and have content before reading.
+func readCaptureFileWithRetry(filePath string) ([]byte, error) {
+	var lastErr error
+	delay := captureFileInitialDelay
+
+	for attempt := 0; attempt <= captureFileMaxRetries; attempt++ {
+		if attempt > 0 {
+			time.Sleep(delay)
+			delay = time.Duration(float64(delay) * 1.5)
+			if delay > captureFileMaxDelay {
+				delay = captureFileMaxDelay
+			}
+		}
+
+		// Check if file exists and has content
+		info, err := os.Stat(filePath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				lastErr = fmt.Errorf("capture file does not exist (attempt %d/%d): %w", attempt+1, captureFileMaxRetries+1, err)
+				continue
+			}
+			lastErr = fmt.Errorf("error checking capture file (attempt %d/%d): %w", attempt+1, captureFileMaxRetries+1, err)
+			continue
+		}
+
+		// Verify file has content (non-empty)
+		if info.Size() == 0 {
+			lastErr = fmt.Errorf("capture file is empty (attempt %d/%d)", attempt+1, captureFileMaxRetries+1)
+			continue
+		}
+
+		// Read the file
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			lastErr = fmt.Errorf("error reading capture file (attempt %d/%d): %w", attempt+1, captureFileMaxRetries+1, err)
+			continue
+		}
+
+		// Verify content was read
+		if len(content) == 0 {
+			lastErr = fmt.Errorf("capture file read returned empty content (attempt %d/%d)", attempt+1, captureFileMaxRetries+1)
+			continue
+		}
+
+		return content, nil
+	}
+
+	return nil, fmt.Errorf("failed to read capture file after %d attempts: %w", captureFileMaxRetries+1, lastErr)
+}
+
 // CapturePaneContent captures the current pane content.
 func (z *ZellijSession) CapturePaneContent() (string, error) {
 	// Check cache first
@@ -404,9 +478,9 @@ func (z *ZellijSession) CapturePaneContent() (string, error) {
 		return "", fmt.Errorf("error capturing pane content: %w", err)
 	}
 
-	content, err := os.ReadFile(tmpFile)
+	content, err := readCaptureFileWithRetry(tmpFile)
 	if err != nil {
-		return "", fmt.Errorf("error reading capture file: %w", err)
+		return "", fmt.Errorf("error reading capture file for session %s: %w", z.sanitizedName, err)
 	}
 
 	result := string(content)
@@ -431,9 +505,9 @@ func (z *ZellijSession) CapturePaneContentWithOptions(start, end string) (string
 		return "", fmt.Errorf("error capturing pane content: %w", err)
 	}
 
-	content, err := os.ReadFile(tmpFile)
+	content, err := readCaptureFileWithRetry(tmpFile)
 	if err != nil {
-		return "", fmt.Errorf("error reading capture file: %w", err)
+		return "", fmt.Errorf("error reading capture file for session %s: %w", z.sanitizedName, err)
 	}
 
 	return string(content), nil

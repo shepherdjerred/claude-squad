@@ -2,6 +2,7 @@ package git
 
 import (
 	"claude-squad/log"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,49 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 )
+
+// ClaudeSettings represents the structure of .claude/settings.local.json
+type ClaudeSettings struct {
+	Permissions ClaudePermissions `json:"permissions"`
+}
+
+// ClaudePermissions represents the permissions section of Claude settings
+type ClaudePermissions struct {
+	Allow []string `json:"allow"`
+}
+
+// DefaultAllowedCommands are the commands that should be auto-approved in worktrees
+var DefaultAllowedCommands = []string{
+	"Bash(git:*)",
+	"Bash(gh:*)",
+}
+
+// createClaudeSettingsFile creates a .claude/settings.local.json file in the worktree
+// that auto-approves git and gh commands
+func (g *GitWorktree) createClaudeSettingsFile() error {
+	claudeDir := filepath.Join(g.worktreePath, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		return fmt.Errorf("failed to create .claude directory: %w", err)
+	}
+
+	settings := ClaudeSettings{
+		Permissions: ClaudePermissions{
+			Allow: DefaultAllowedCommands,
+		},
+	}
+
+	settingsJSON, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal settings: %w", err)
+	}
+
+	settingsPath := filepath.Join(claudeDir, "settings.local.json")
+	if err := os.WriteFile(settingsPath, settingsJSON, 0644); err != nil {
+		return fmt.Errorf("failed to write settings file: %w", err)
+	}
+
+	return nil
+}
 
 // Setup creates a new worktree for the session
 func (g *GitWorktree) Setup() error {
@@ -75,6 +119,19 @@ func (g *GitWorktree) setupFromExistingBranch() error {
 		return fmt.Errorf("failed to create worktree from branch %s: %w", g.branchName, err)
 	}
 
+	// Set the base commit SHA for diff computation
+	// Find the merge-base between this branch and the default branch
+	g.reportProgress("Computing base commit for diff...")
+	if err := g.computeBaseCommitSHA(); err != nil {
+		// Log the error but don't fail - diff stats just won't be available
+		log.WarningLog.Printf("could not compute base commit SHA: %v", err)
+	}
+
+	// Create Claude settings file to auto-approve git/gh commands
+	if err := g.createClaudeSettingsFile(); err != nil {
+		log.WarningLog.Printf("failed to create Claude settings file: %v", err)
+	}
+
 	g.reportProgress("Worktree ready")
 	return nil
 }
@@ -123,6 +180,11 @@ func (g *GitWorktree) setupNewWorktree() error {
 	g.reportProgress("Creating worktree...")
 	if _, err := g.runGitCommand(g.repoPath, "worktree", "add", "-b", g.branchName, g.worktreePath, headCommit); err != nil {
 		return fmt.Errorf("failed to create worktree from commit %s: %w", headCommit, err)
+	}
+
+	// Create Claude settings file to auto-approve git/gh commands
+	if err := g.createClaudeSettingsFile(); err != nil {
+		log.WarningLog.Printf("failed to create Claude settings file: %v", err)
 	}
 
 	g.reportProgress("Worktree ready")
@@ -258,4 +320,50 @@ func CleanupWorktrees() error {
 	}
 
 	return nil
+}
+
+// computeBaseCommitSHA finds the merge-base between the current branch and the default branch
+// This is used to compute diffs for existing branches that were resumed
+func (g *GitWorktree) computeBaseCommitSHA() error {
+	// Try to find the default branch (main, master, or remote HEAD)
+	defaultBranch, err := g.findDefaultBranch()
+	if err != nil {
+		return fmt.Errorf("could not find default branch: %w", err)
+	}
+
+	// Find the merge-base between the current branch and the default branch
+	mergeBase, err := g.runGitCommand(g.repoPath, "merge-base", g.branchName, defaultBranch)
+	if err != nil {
+		return fmt.Errorf("could not find merge-base: %w", err)
+	}
+
+	g.baseCommitSHA = strings.TrimSpace(mergeBase)
+	return nil
+}
+
+// findDefaultBranch attempts to find the default branch of the repository
+// It tries: remote HEAD, then main, then master
+func (g *GitWorktree) findDefaultBranch() (string, error) {
+	// Try to get the remote HEAD reference (most accurate for determining default branch)
+	if output, err := g.runGitCommand(g.repoPath, "symbolic-ref", "refs/remotes/origin/HEAD"); err == nil {
+		// Output is like "refs/remotes/origin/main"
+		ref := strings.TrimSpace(output)
+		// Extract just the branch name (e.g., "main" from "refs/remotes/origin/main")
+		parts := strings.Split(ref, "/")
+		if len(parts) > 0 {
+			return parts[len(parts)-1], nil
+		}
+	}
+
+	// Fallback: check if main exists
+	if _, err := g.runGitCommand(g.repoPath, "rev-parse", "--verify", "main"); err == nil {
+		return "main", nil
+	}
+
+	// Fallback: check if master exists
+	if _, err := g.runGitCommand(g.repoPath, "rev-parse", "--verify", "master"); err == nil {
+		return "master", nil
+	}
+
+	return "", fmt.Errorf("could not find default branch (tried origin/HEAD, main, master)")
 }

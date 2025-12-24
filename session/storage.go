@@ -10,20 +10,24 @@ import (
 
 // InstanceData represents the serializable data of an Instance
 type InstanceData struct {
-	Title     string    `json:"title"`
-	Path      string    `json:"path"`
-	Branch    string    `json:"branch"`
-	Status    Status    `json:"status"`
-	Height    int       `json:"height"`
-	Width     int       `json:"width"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	AutoYes   bool      `json:"auto_yes"`
+	Title        string     `json:"title"`
+	Path         string     `json:"path"`
+	Branch       string     `json:"branch"`
+	Status       Status     `json:"status"`
+	Height       int        `json:"height"`
+	Width        int        `json:"width"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	LastOpenedAt *time.Time `json:"last_opened_at,omitempty"`
+	AutoYes      bool       `json:"auto_yes"`
+	Archived     bool       `json:"archived"`
 
-	Program     string          `json:"program"`
-	Multiplexer string          `json:"multiplexer"`
-	Worktree    GitWorktreeData `json:"worktree"`
-	DiffStats   DiffStatsData   `json:"diff_stats"`
+	Program          string          `json:"program"`
+	Multiplexer      string          `json:"multiplexer"`
+	Worktree         GitWorktreeData `json:"worktree"`
+	DiffStats        DiffStatsData   `json:"diff_stats"`
+	Summary          string          `json:"summary,omitempty"`
+	SummaryUpdatedAt time.Time       `json:"summary_updated_at,omitempty"`
 }
 
 // GitWorktreeData represents the serializable data of a GitWorktree
@@ -161,4 +165,80 @@ func (s *Storage) UpdateInstance(instance *Instance) error {
 // DeleteAllInstances removes all stored instances
 func (s *Storage) DeleteAllInstances() error {
 	return s.state.DeleteAllInstances()
+}
+
+// ArchiveInstance archives an instance by title
+func (s *Storage) ArchiveInstance(title string) error {
+	return s.setInstanceArchived(title, true)
+}
+
+// UnarchiveInstance unarchives an instance by title
+func (s *Storage) UnarchiveInstance(title string) error {
+	return s.setInstanceArchived(title, false)
+}
+
+// setInstanceArchived sets the archived state of an instance
+func (s *Storage) setInstanceArchived(title string, archived bool) error {
+	jsonData := s.state.GetInstances()
+
+	var instancesData []InstanceData
+	if err := json.Unmarshal(jsonData, &instancesData); err != nil {
+		return fmt.Errorf("failed to unmarshal instances: %w", err)
+	}
+
+	found := false
+	for i := range instancesData {
+		if instancesData[i].Title == title {
+			instancesData[i].Archived = archived
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("instance not found: %s", title)
+	}
+
+	// Marshal and save
+	jsonData, err := json.Marshal(instancesData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal instances: %w", err)
+	}
+
+	return s.state.SaveInstances(jsonData)
+}
+
+// StateSyncer is an optional interface for states that support sync from disk
+type StateSyncer interface {
+	RefreshFromDisk() (bool, error)
+}
+
+// SyncFromDisk checks if the state file has been modified by another process
+// and reloads instances if needed. Returns the new instances and whether a sync occurred.
+// The caller is responsible for merging these with any in-memory instances.
+func (s *Storage) SyncFromDisk() ([]*Instance, bool, error) {
+	// Check if the underlying state supports sync
+	syncer, ok := s.state.(StateSyncer)
+	if !ok {
+		return nil, false, nil
+	}
+
+	// Try to refresh from disk
+	refreshed, err := syncer.RefreshFromDisk()
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to refresh state from disk: %w", err)
+	}
+
+	if !refreshed {
+		return nil, false, nil
+	}
+
+	// State was refreshed, reload instances
+	log.InfoLog.Printf("State file changed, reloading instances from disk")
+	instances, err := s.LoadInstances()
+	if err != nil {
+		return nil, true, fmt.Errorf("failed to load instances after refresh: %w", err)
+	}
+
+	return instances, true, nil
 }
