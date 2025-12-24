@@ -64,6 +64,10 @@ type Instance struct {
 	// SummaryUpdatedAt is when the summary was last updated
 	SummaryUpdatedAt time.Time
 
+	// Background diff calculation timing
+	lastDiffUpdate time.Time // When diff was last calculated
+	lastActivity   time.Time // When instance status last changed
+
 	// The below fields are initialized upon calling Start().
 
 	started bool
@@ -283,6 +287,7 @@ func (i *Instance) RepoName() (string, error) {
 
 func (i *Instance) SetStatus(status Status) {
 	i.Status = status
+	i.lastActivity = time.Now()
 }
 
 // StartWithProgress starts the instance with an optional progress callback.
@@ -648,12 +653,31 @@ func (i *Instance) UpdateDiffStats() error {
 	}
 
 	i.diffStats = stats
+	i.lastDiffUpdate = time.Now()
 	return nil
 }
 
 // GetDiffStats returns the current git diff statistics
 func (i *Instance) GetDiffStats() *git.DiffStats {
 	return i.diffStats
+}
+
+// ShouldUpdateDiff returns true if the instance is due for a diff stats update.
+// Rate limiting: at least 10s since last activity, at most once per 30s.
+func (i *Instance) ShouldUpdateDiff() bool {
+	if !i.started || i.Status == Paused {
+		return false
+	}
+	now := time.Now()
+	// At least 30s since last diff calculation
+	if !i.lastDiffUpdate.IsZero() && now.Sub(i.lastDiffUpdate) < 30*time.Second {
+		return false
+	}
+	// At least 10s since last activity (status change)
+	if !i.lastActivity.IsZero() && now.Sub(i.lastActivity) < 10*time.Second {
+		return false
+	}
+	return true
 }
 
 // SendPrompt sends a prompt to the session

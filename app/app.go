@@ -253,10 +253,11 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(
 			func() tea.Msg {
 				updateResults := session.ParallelUpdate(instances)
-				diffErrors := session.ParallelUpdateDiffStats(instances)
+				// Background diff stats update - non-blocking, rate-limited
+				// (10s delay after activity, max once per 30s per instance)
+				session.BackgroundUpdateDiffStats(instances)
 				return metadataUpdateResultMsg{
 					updateResults:  updateResults,
-					diffErrors:     diffErrors,
 					syncedFromDisk: synced,
 					diskInstances:  diskInstances,
 				}
@@ -289,12 +290,6 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Log diff errors
-		for _, err := range msg.diffErrors {
-			if err != nil {
-				log.WarningLog.Printf("could not update diff stats: %v", err)
-			}
-		}
 
 		return m, nil
 	case tickUpdateSummaryMessage:
@@ -890,7 +885,6 @@ type summaryUpdateResultMsg struct {
 // metadataUpdateResultMsg carries results from async metadata update
 type metadataUpdateResultMsg struct {
 	updateResults  []session.UpdateResult
-	diffErrors     []error
 	syncedFromDisk bool
 	diskInstances  []*session.Instance
 }
