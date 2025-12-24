@@ -292,6 +292,9 @@ func (t *TmuxSession) Attach() (chan struct{}, error) {
 		_ = t.updateWindowSize(cols, rows)
 	}
 
+	// Show a hint to the user about how to detach
+	fmt.Fprintf(os.Stdout, "\033[90m--- Press Ctrl+Q to detach ---\033[0m\n")
+
 	// The first goroutine should terminate when the ptmx is closed. We use the
 	// waitgroup to wait for it to finish.
 	// The 2nd one returns when you press escape to Detach. It doesn't need to be
