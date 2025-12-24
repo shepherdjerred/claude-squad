@@ -20,10 +20,12 @@ type InstanceData struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	AutoYes   bool      `json:"auto_yes"`
 
-	Program     string          `json:"program"`
-	Multiplexer string          `json:"multiplexer"`
-	Worktree    GitWorktreeData `json:"worktree"`
-	DiffStats   DiffStatsData   `json:"diff_stats"`
+	Program          string          `json:"program"`
+	Multiplexer      string          `json:"multiplexer"`
+	Worktree         GitWorktreeData `json:"worktree"`
+	DiffStats        DiffStatsData   `json:"diff_stats"`
+	Summary          string          `json:"summary,omitempty"`
+	SummaryUpdatedAt time.Time       `json:"summary_updated_at,omitempty"`
 }
 
 // GitWorktreeData represents the serializable data of a GitWorktree

@@ -56,6 +56,14 @@ var muxTagStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#666666"}).
 	Italic(true)
 
+var summaryStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#666666", Dark: "#888888"}).
+	Italic(true)
+
+var selectedSummaryStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#444444", Dark: "#444444"}).
+	Italic(true)
+
 type List struct {
 	items         []*session.Instance
 	selectedIdx   int
@@ -226,12 +234,44 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 
 	branchLine := fmt.Sprintf("%s %s-%s%s%s", strings.Repeat(" ", len(prefix)), branchIcon, branch, spaces, diff)
 
-	// join title and subtitle
-	text := lipgloss.JoinVertical(
-		lipgloss.Left,
-		title,
-		descS.Render(branchLine),
-	)
+	// Build summary line if available
+	var summaryLine string
+	if i.Summary != "" {
+		summaryText := i.Summary
+		// Truncate summary if too long
+		maxSummaryWidth := r.width - len(prefix) - 2
+		if maxSummaryWidth > 0 && len(summaryText) > maxSummaryWidth {
+			if maxSummaryWidth > 3 {
+				summaryText = summaryText[:maxSummaryWidth-3] + "..."
+			} else {
+				summaryText = ""
+			}
+		}
+		if summaryText != "" {
+			sumStyle := summaryStyle
+			if selected {
+				sumStyle = selectedSummaryStyle.Background(descS.GetBackground())
+			}
+			summaryLine = fmt.Sprintf("%s %s", strings.Repeat(" ", len(prefix)), sumStyle.Render(summaryText))
+		}
+	}
+
+	// join title, subtitle, and summary
+	var text string
+	if summaryLine != "" {
+		text = lipgloss.JoinVertical(
+			lipgloss.Left,
+			title,
+			descS.Render(branchLine),
+			descS.Render(summaryLine),
+		)
+	} else {
+		text = lipgloss.JoinVertical(
+			lipgloss.Left,
+			title,
+			descS.Render(branchLine),
+		)
+	}
 
 	return text
 }
