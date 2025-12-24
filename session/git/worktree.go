@@ -34,6 +34,11 @@ type GitWorktree struct {
 	baseCommitSHA string
 	// Progress callback for status updates
 	progressCallback ProgressCallback
+
+	// Diff caching
+	cachedDiffStats   *DiffStats
+	diffCacheTime     time.Time
+	diffCacheDuration time.Duration
 }
 
 func NewGitWorktreeFromStorage(repoPath string, worktreePath string, sessionName string, branchName string, baseCommitSHA string) *GitWorktree {

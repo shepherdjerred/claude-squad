@@ -3,6 +3,7 @@ package session
 import (
 	"claude-squad/log"
 	"claude-squad/session/git"
+	"claude-squad/session/zellij"
 	"path/filepath"
 
 	"fmt"
@@ -50,9 +51,16 @@ type Instance struct {
 	AutoYes bool
 	// Prompt is the initial prompt to pass to the instance on startup
 	Prompt string
+	// Archived is true if the instance has been archived (hidden but not deleted).
+	Archived bool
 
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
+
+	// Summary is a short AI-generated description of the current session state
+	Summary string
+	// SummaryUpdatedAt is when the summary was last updated
+	SummaryUpdatedAt time.Time
 
 	// The below fields are initialized upon calling Start().
 
@@ -68,17 +76,20 @@ type Instance struct {
 // ToInstanceData converts an Instance to its serializable form
 func (i *Instance) ToInstanceData() InstanceData {
 	data := InstanceData{
-		Title:      i.Title,
-		Path:       i.Path,
-		Branch:     i.Branch,
-		Status:     i.Status,
-		Height:     i.Height,
-		Width:      i.Width,
-		CreatedAt:  i.CreatedAt,
-		UpdatedAt:  time.Now(),
-		Program:    i.Program,
-		AutoYes:    i.AutoYes,
-		Multiplexer: string(i.multiplexerType),
+		Title:            i.Title,
+		Path:             i.Path,
+		Branch:           i.Branch,
+		Status:           i.Status,
+		Height:           i.Height,
+		Width:            i.Width,
+		CreatedAt:        i.CreatedAt,
+		UpdatedAt:        time.Now(),
+		Program:          i.Program,
+		AutoYes:          i.AutoYes,
+		Archived:         i.Archived,
+		Multiplexer:      string(i.multiplexerType),
+		Summary:          i.Summary,
+		SummaryUpdatedAt: i.SummaryUpdatedAt,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -104,6 +115,66 @@ func (i *Instance) ToInstanceData() InstanceData {
 	return data
 }
 
+// NewInstanceFromOrphan creates an Instance from recovered orphaned session data
+func NewInstanceFromOrphan(orphan *zellij.OrphanedSession) (*Instance, error) {
+	if orphan == nil {
+		return nil, fmt.Errorf("orphan session data is nil")
+	}
+
+	// Validate required fields
+	if orphan.SessionName == "" {
+		return nil, fmt.Errorf("orphan session name is empty")
+	}
+	if orphan.WorktreePath == "" {
+		return nil, fmt.Errorf("orphan worktree path is empty")
+	}
+
+	// Determine repo path - use recovered path or fall back to worktree path
+	repoPath := orphan.RepoPath
+	if repoPath == "" {
+		repoPath = orphan.WorktreePath
+	}
+
+	// Create git worktree from recovered data
+	gitWorktree := git.NewGitWorktreeFromStorage(
+		repoPath,
+		orphan.WorktreePath,
+		orphan.Title,
+		orphan.BranchName,
+		"", // Base commit SHA is unknown for orphaned sessions
+	)
+
+	// Create the instance
+	now := time.Now()
+	instance := &Instance{
+		Title:           orphan.Title,
+		Path:            orphan.WorktreePath,
+		Branch:          orphan.BranchName,
+		Status:          Running,
+		Program:         orphan.Program,
+		Height:          0,
+		Width:           0,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+		AutoYes:         false,
+		multiplexerType: MultiplexerZellij, // Orphaned sessions are always Zellij
+		gitWorktree:     gitWorktree,
+	}
+
+	// Create Zellij session and restore connection to existing session
+	session := NewMultiplexer(MultiplexerZellij, instance.Title, instance.Program)
+	instance.session = session
+
+	// Restore connection to existing session
+	if err := session.Restore(); err != nil {
+		return nil, fmt.Errorf("failed to restore orphan session: %w", err)
+	}
+
+	instance.started = true
+
+	return instance, nil
+}
+
 // FromInstanceData creates a new Instance from serialized data
 func FromInstanceData(data InstanceData) (*Instance, error) {
 	// Parse multiplexer type, defaulting to tmux for backwards compatibility
@@ -113,16 +184,19 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 	}
 
 	instance := &Instance{
-		Title:           data.Title,
-		Path:            data.Path,
-		Branch:          data.Branch,
-		Status:          data.Status,
-		Height:          data.Height,
-		Width:           data.Width,
-		CreatedAt:       data.CreatedAt,
-		UpdatedAt:       data.UpdatedAt,
-		Program:         data.Program,
-		multiplexerType: mtype,
+		Title:            data.Title,
+		Path:             data.Path,
+		Branch:           data.Branch,
+		Status:           data.Status,
+		Height:           data.Height,
+		Width:            data.Width,
+		CreatedAt:        data.CreatedAt,
+		UpdatedAt:        data.UpdatedAt,
+		Program:          data.Program,
+		Archived:         data.Archived,
+		Summary:          data.Summary,
+		SummaryUpdatedAt: data.SummaryUpdatedAt,
+		multiplexerType:  mtype,
 		gitWorktree: git.NewGitWorktreeFromStorage(
 			data.Worktree.RepoPath,
 			data.Worktree.WorktreePath,
@@ -137,7 +211,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		},
 	}
 
-	if instance.Paused() {
+	if instance.Paused() || instance.Archived {
 		instance.started = true
 		instance.session = NewMultiplexer(mtype, instance.Title, instance.Program)
 	} else {
@@ -395,6 +469,21 @@ func (i *Instance) SetTitle(title string) error {
 		return fmt.Errorf("cannot change title of a started instance")
 	}
 	i.Title = title
+	return nil
+}
+
+// Rename changes the display title of the instance. Unlike SetTitle, this can be called
+// after the instance has started. Note that this only changes the display name - the
+// underlying session name and git worktree path remain unchanged.
+func (i *Instance) Rename(newTitle string) error {
+	if newTitle == "" {
+		return fmt.Errorf("title cannot be empty")
+	}
+	if len(newTitle) > 32 {
+		return fmt.Errorf("title cannot be longer than 32 characters")
+	}
+	i.Title = newTitle
+	i.UpdatedAt = time.Now()
 	return nil
 }
 

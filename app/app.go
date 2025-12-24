@@ -5,6 +5,7 @@ import (
 	"claude-squad/keys"
 	"claude-squad/log"
 	"claude-squad/session"
+	"claude-squad/session/zellij"
 	"claude-squad/ui"
 	"claude-squad/ui/overlay"
 	"context"
@@ -46,6 +47,8 @@ const (
 	stateLoading
 	// stateFileBrowser is the state when the user is selecting a directory.
 	stateFileBrowser
+	// stateRename is the state when the user is renaming an instance.
+	stateRename
 )
 
 type home struct {
@@ -74,8 +77,8 @@ type home struct {
 	// promptAfterName tracks if we should enter prompt mode after naming
 	promptAfterName bool
 
-	// keySent is used to manage underlining menu items
-	keySent bool
+	// pendingSave indicates that a save is queued (for debouncing)
+	pendingSave bool
 
 	// -- UI Components --
 
@@ -102,6 +105,11 @@ type home struct {
 
 	// pendingInstancePath stores the selected path from the file browser
 	pendingInstancePath string
+
+	// -- Background Services --
+
+	// summarizer handles generating AI summaries for instances
+	summarizer *session.Summarizer
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
@@ -130,6 +138,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		autoYes:      autoYes,
 		state:        stateDefault,
 		appState:     appState,
+		summarizer:   session.NewSummarizer(),
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
 
@@ -191,6 +200,7 @@ func (m *home) Init() tea.Cmd {
 			return previewTickMsg{}
 		},
 		tickUpdateMetadataCmd,
+		tickUpdateSummaryCmd,
 	)
 }
 
@@ -203,12 +213,21 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(
 			cmd,
 			func() tea.Msg {
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(250 * time.Millisecond)
 				return previewTickMsg{}
 			},
 		)
 	case keyupMsg:
 		m.menu.ClearKeydown()
+		return m, nil
+	case saveDebounceMsg:
+		m.pendingSave = false
+		// Perform the save asynchronously to avoid blocking the UI
+		go func() {
+			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+				log.ErrorLog.Printf("failed to save instances: %v", err)
+			}
+		}()
 		return m, nil
 	case tickUpdateMetadataMessage:
 		// Check if state file was modified by another process and sync if needed
@@ -251,6 +270,13 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, tickUpdateMetadataCmd
+	case tickUpdateSummaryMessage:
+		// Update the next instance's summary (staggered)
+		instances := m.list.GetInstances()
+		if updated := m.summarizer.UpdateNextSummary(instances); updated != nil {
+			log.InfoLog.Printf("Updated summary for %s: %s", updated.Title, updated.Summary)
+		}
+		return m, tickUpdateSummaryCmd
 	case loadingProgressMsg:
 		if m.loadingOverlay != nil {
 			m.loadingOverlay.SetStatus(msg.status)
@@ -333,45 +359,35 @@ func (m *home) handleQuit() (tea.Model, tea.Cmd) {
 	return m, tea.Quit
 }
 
-func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly bool) {
-	// Handle menu highlighting when you press a button. We intercept it here and immediately return to
-	// update the ui while re-sending the keypress. Then, on the next call to this, we actually handle the keypress.
-	if m.keySent {
-		m.keySent = false
-		return nil, false
-	}
+// handleMenuHighlighting returns a command to highlight the pressed key in the menu.
+// This is purely visual - it briefly underlines the corresponding menu item.
+func (m *home) handleMenuHighlighting(msg tea.KeyMsg) tea.Cmd {
 	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm {
-		return nil, false
+		return nil
 	}
 	// If it's in the global keymap, we should try to highlight it.
 	name, ok := keys.GlobalKeyStringsMap[msg.String()]
 	if !ok {
-		return nil, false
+		return nil
 	}
 
 	if m.list.GetSelectedInstance() != nil && m.list.GetSelectedInstance().Paused() && name == keys.KeyEnter {
-		return nil, false
+		return nil
 	}
 	if name == keys.KeyShiftDown || name == keys.KeyShiftUp {
-		return nil, false
+		return nil
 	}
 
-	// Skip the menu highlighting if the key is not in the map or we are using the shift up and down keys.
 	// TODO: cleanup: when you press enter on stateNew, we use keys.KeySubmitName. We should unify the keymap.
 	if name == keys.KeyEnter && m.state == stateNew {
 		name = keys.KeySubmitName
 	}
-	m.keySent = true
-	return tea.Batch(
-		func() tea.Msg { return msg },
-		m.keydownCallback(name)), true
+	return m.keydownCallback(name)
 }
 
 func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
-	cmd, returnEarly := m.handleMenuHighlighting(msg)
-	if returnEarly {
-		return m, cmd
-	}
+	// Get the menu highlight command - this is batched with the action command later
+	highlightCmd := m.handleMenuHighlighting(msg)
 
 	if m.state == stateHelp {
 		return m.handleHelpState(msg)
@@ -492,6 +508,50 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 
 		return m, nil
+	} else if m.state == stateRename {
+		// Use the TextInputOverlay component to handle key events for renaming
+		shouldClose := m.textInputOverlay.HandleKeyPress(msg)
+
+		// Check if the form was submitted or canceled
+		if shouldClose {
+			selected := m.list.GetSelectedInstance()
+			if selected == nil {
+				m.textInputOverlay = nil
+				m.state = stateDefault
+				m.menu.SetState(ui.StateDefault)
+				return m, nil
+			}
+			if m.textInputOverlay.IsSubmitted() {
+				newTitle := m.textInputOverlay.GetValue()
+				if err := selected.Rename(newTitle); err != nil {
+					m.textInputOverlay = nil
+					m.state = stateDefault
+					m.menu.SetState(ui.StateDefault)
+					return m, m.handleError(err)
+				}
+				// Save the updated instance
+				if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+					m.textInputOverlay = nil
+					m.state = stateDefault
+					m.menu.SetState(ui.StateDefault)
+					return m, m.handleError(err)
+				}
+			}
+
+			// Close the overlay and reset state
+			m.textInputOverlay = nil
+			m.state = stateDefault
+			return m, tea.Batch(
+				tea.WindowSize(),
+				func() tea.Msg {
+					m.menu.SetState(ui.StateDefault)
+					return nil
+				},
+				m.instanceChanged(),
+			)
+		}
+
+		return m, nil
 	}
 
 	// Handle confirmation state
@@ -550,36 +610,74 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m.showFileBrowser()
 	case keys.KeyUp:
 		m.list.Up()
-		return m, m.instanceChanged()
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
 	case keys.KeyDown:
 		m.list.Down()
-		return m, m.instanceChanged()
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
 	case keys.KeyShiftUp:
 		m.tabbedWindow.ScrollUp()
-		return m, m.instanceChanged()
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
 	case keys.KeyShiftDown:
 		m.tabbedWindow.ScrollDown()
-		return m, m.instanceChanged()
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
 	case keys.KeyMoveUp:
 		if m.list.MoveUp() {
-			// Save instances after reordering
-			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
-				return m, m.handleError(err)
-			}
+			// Schedule debounced save to avoid blocking on rapid key presses
+			return m, tea.Batch(highlightCmd, m.instanceChanged(), m.requestSave())
 		}
-		return m, m.instanceChanged()
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
 	case keys.KeyMoveDown:
 		if m.list.MoveDown() {
-			// Save instances after reordering
-			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
-				return m, m.handleError(err)
-			}
+			// Schedule debounced save to avoid blocking on rapid key presses
+			return m, tea.Batch(highlightCmd, m.instanceChanged(), m.requestSave())
 		}
-		return m, m.instanceChanged()
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
+	case keys.KeyToggleArchive:
+		m.list.ToggleArchiveView()
+		m.menu.SetShowingArchived(m.list.ShowingArchived())
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
+	case keys.KeyArchive:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil {
+			return m, nil
+		}
+
+		// Determine action based on current view and instance state
+		if m.list.ShowingArchived() {
+			// In archived view - unarchive (restore) the instance
+			restoreAction := func() tea.Msg {
+				selected.Archived = false
+				if err := m.storage.UnarchiveInstance(selected.Title); err != nil {
+					return err
+				}
+				m.list.RemoveSelectedFromView()
+				return instanceChangedMsg{}
+			}
+			message := fmt.Sprintf("[!] Restore session '%s'?", selected.Title)
+			return m, m.confirmAction(message, restoreAction)
+		} else {
+			// In active view - archive the instance
+			archiveAction := func() tea.Msg {
+				// Pause the instance first if it's running
+				if !selected.Paused() {
+					if err := selected.Pause(); err != nil {
+						return err
+					}
+				}
+				selected.Archived = true
+				if err := m.storage.ArchiveInstance(selected.Title); err != nil {
+					return err
+				}
+				m.list.RemoveSelectedFromView()
+				return instanceChangedMsg{}
+			}
+			message := fmt.Sprintf("[!] Archive session '%s'?", selected.Title)
+			return m, m.confirmAction(message, archiveAction)
+		}
 	case keys.KeyTab:
 		m.tabbedWindow.Toggle()
 		m.menu.SetInDiffTab(m.tabbedWindow.IsInDiffTab())
-		return m, m.instanceChanged()
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
 	case keys.KeyKill:
 		selected := m.list.GetSelectedInstance()
 		if selected == nil {
@@ -662,6 +760,8 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(err)
 		}
 		return m, tea.WindowSize()
+	case keys.KeyImport:
+		return m.handleImportOrphanedSessions()
 	case keys.KeyEnter:
 		if m.list.NumInstances() == 0 {
 			return m, nil
@@ -680,6 +780,16 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			<-ch
 			m.state = stateDefault
 		})
+		return m, nil
+	case keys.KeyRename:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil {
+			return m, nil
+		}
+		// Enter rename mode with the current title pre-filled
+		m.state = stateRename
+		m.menu.SetState(ui.StateRename)
+		m.textInputOverlay = overlay.NewTextInputOverlay("Rename instance", selected.Title)
 		return m, nil
 	default:
 		return m, nil
@@ -727,7 +837,15 @@ type previewTickMsg struct{}
 
 type tickUpdateMetadataMessage struct{}
 
+type tickUpdateSummaryMessage struct{}
+
 type instanceChangedMsg struct{}
+
+// saveDebounceMsg is sent after a debounce delay to trigger a save
+type saveDebounceMsg struct{}
+
+// saveDebounceDelay is how long to wait before saving after a reorder operation
+const saveDebounceDelay = 500 * time.Millisecond
 
 // loadingProgressMsg is sent when there's a progress update during loading
 type loadingProgressMsg struct {
@@ -739,11 +857,18 @@ type loadingCompleteMsg struct {
 	err error
 }
 
-// tickUpdateMetadataCmd is the callback to update the metadata of the instances every 500ms. Note that we iterate
-// overall the instances and capture their output. It's a pretty expensive operation. Let's do it 2x a second only.
+// tickUpdateMetadataCmd is the callback to update the metadata of the instances every 2 seconds.
+// Note that we iterate over all instances and capture their output. It's an expensive operation.
 var tickUpdateMetadataCmd = func() tea.Msg {
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(2 * time.Second)
 	return tickUpdateMetadataMessage{}
+}
+
+// tickUpdateSummaryCmd is the callback to update instance summaries. This is staggered across instances
+// so we don't overwhelm the system with Claude CLI calls.
+var tickUpdateSummaryCmd = func() tea.Msg {
+	time.Sleep(session.SummaryRefreshInterval)
+	return tickUpdateSummaryMessage{}
 }
 
 // handleError handles all errors which get bubbled up to the app. sets the error message. We return a callback tea.Cmd that returns a hideErrMsg message
@@ -758,6 +883,19 @@ func (m *home) handleError(err error) tea.Cmd {
 		}
 
 		return hideErrMsg{}
+	}
+}
+
+// requestSave schedules a debounced save operation.
+// If a save is already pending, this does nothing (the pending save will include all changes).
+func (m *home) requestSave() tea.Cmd {
+	if m.pendingSave {
+		return nil // Already have a pending save
+	}
+	m.pendingSave = true
+	return func() tea.Msg {
+		time.Sleep(saveDebounceDelay)
+		return saveDebounceMsg{}
 	}
 }
 
@@ -843,6 +981,86 @@ func (m *home) createInstanceWithPath(path string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleImportOrphanedSessions finds and imports orphaned Zellij sessions
+func (m *home) handleImportOrphanedSessions() (tea.Model, tea.Cmd) {
+	// Get list of currently tracked instance titles
+	instances := m.list.GetInstances()
+	trackedTitles := make([]string, len(instances))
+	for i, inst := range instances {
+		trackedTitles[i] = inst.Title
+	}
+
+	// Find orphaned sessions
+	orphans, err := zellij.ListOrphanedSessions(trackedTitles, nil)
+	if err != nil {
+		return m, m.handleError(fmt.Errorf("failed to list orphaned sessions: %w", err))
+	}
+
+	if len(orphans) == 0 {
+		return m, m.handleError(fmt.Errorf("no orphaned sessions found"))
+	}
+
+	// Check instance limit
+	if m.list.NumInstances()+len(orphans) > GlobalInstanceLimit {
+		return m, m.handleError(fmt.Errorf("importing %d sessions would exceed the limit of %d instances",
+			len(orphans), GlobalInstanceLimit))
+	}
+
+	// Import each orphaned session
+	importedCount := 0
+	var importErrors []string
+	for _, orphan := range orphans {
+		// Recover full metadata for this session
+		recovered, err := zellij.RecoverMetadata(orphan.SessionName, nil)
+		if err != nil {
+			importErrors = append(importErrors, fmt.Sprintf("%s: %v", orphan.Title, err))
+			continue
+		}
+
+		// Create instance from recovered data
+		instance, err := session.NewInstanceFromOrphan(recovered)
+		if err != nil {
+			importErrors = append(importErrors, fmt.Sprintf("%s: %v", orphan.Title, err))
+			continue
+		}
+
+		// Add to the list
+		finalizer := m.list.AddInstance(instance)
+		finalizer()
+		if m.autoYes {
+			instance.AutoYes = true
+		}
+		importedCount++
+	}
+
+	// Save state after importing
+	if importedCount > 0 {
+		if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+			return m, m.handleError(fmt.Errorf("failed to save after import: %w", err))
+		}
+	}
+
+	// Report results
+	if len(importErrors) > 0 {
+		log.WarningLog.Printf("Import errors: %v", importErrors)
+		if importedCount == 0 {
+			return m, m.handleError(fmt.Errorf("failed to import any sessions"))
+		}
+		return m, m.handleError(fmt.Errorf("imported %d session(s), %d failed", importedCount, len(importErrors)))
+	}
+
+	// Show success message via error box (it's just a message display)
+	m.errBox.SetError(fmt.Errorf("imported %d orphaned session(s)", importedCount))
+	return m, tea.Batch(
+		tea.WindowSize(),
+		m.instanceChanged(),
+		func() tea.Msg {
+			time.Sleep(3 * time.Second)
+			return hideErrMsg{}
+		},
+	)
+}
+
 func (m *home) View() string {
 	listWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.list.String())
 	previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.tabbedWindow.String())
@@ -855,7 +1073,7 @@ func (m *home) View() string {
 		m.errBox.String(),
 	)
 
-	if m.state == statePrompt {
+	if m.state == statePrompt || m.state == stateRename {
 		if m.textInputOverlay == nil {
 			log.ErrorLog.Printf("text input overlay is nil")
 		}
