@@ -3,6 +3,7 @@ package zellij
 import (
 	"fmt"
 	"image/color"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,10 @@ const (
 	defaultTermWidth  = 80
 	defaultTermHeight = 24
 )
+
+// oscSequenceRegex matches OSC 8 hyperlink sequences that vt100 doesn't handle.
+// Format: ESC ] 8 ; params ; URI ST (where ST is ESC \ or BEL)
+var oscSequenceRegex = regexp.MustCompile(`\x1b\]8;[^;]*;[^\x1b\x07]*(?:\x1b\\|\x07)`)
 
 // TerminalBuffer wraps a VT100 terminal emulator to capture PTY output with colors.
 // It maintains a cached render of the screen content with ANSI escape codes.
@@ -57,11 +62,15 @@ func (tb *TerminalBuffer) Write(p []byte) (n int, err error) {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 
-	n, err = tb.vt.Write(p)
-	if n > 0 {
+	// Strip OSC 8 hyperlink sequences that vt100 doesn't handle
+	cleaned := oscSequenceRegex.ReplaceAll(p, nil)
+
+	_, err = tb.vt.Write(cleaned)
+	if len(cleaned) > 0 {
 		tb.dirty = true
 	}
-	return n, err
+	// Return original length so callers don't see unexpected write lengths
+	return len(p), err
 }
 
 // Resize changes the terminal dimensions.

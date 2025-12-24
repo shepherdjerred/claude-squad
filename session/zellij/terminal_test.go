@@ -115,3 +115,45 @@ func TestTerminalBuffer_CachedRender(t *testing.T) {
 		t.Log("Render after write completed successfully")
 	}
 }
+
+func TestTerminalBuffer_OSC8Stripping(t *testing.T) {
+	tb := NewTerminalBufferWithSize(5, 40)
+
+	// Write text with OSC 8 hyperlink sequences
+	// Format: ESC ] 8 ; ; URL ST text ESC ] 8 ; ; ST
+	// ST (String Terminator) can be ESC \ or BEL (\x07)
+	hyperlink := "\x1b]8;;https://example.com\x1b\\Click Here\x1b]8;;\x1b\\"
+	tb.Write([]byte(hyperlink))
+
+	rendered := tb.Render()
+
+	// Should contain the visible text
+	if !strings.Contains(rendered, "Click Here") {
+		t.Errorf("Rendered output should contain 'Click Here', got: %q", rendered)
+	}
+
+	// Should NOT contain the "8;;" sequence artifacts
+	if strings.Contains(rendered, "8;;") {
+		t.Errorf("Rendered output should not contain '8;;' artifacts, got: %q", rendered)
+	}
+}
+
+func TestTerminalBuffer_OSC8StrippingWithBEL(t *testing.T) {
+	tb := NewTerminalBufferWithSize(5, 40)
+
+	// OSC 8 with BEL as string terminator
+	hyperlink := "\x1b]8;;https://example.com\x07Click Here\x1b]8;;\x07"
+	tb.Write([]byte(hyperlink))
+
+	rendered := tb.Render()
+
+	// Should contain the visible text
+	if !strings.Contains(rendered, "Click Here") {
+		t.Errorf("Rendered output should contain 'Click Here', got: %q", rendered)
+	}
+
+	// Should NOT contain the "8;;" sequence artifacts
+	if strings.Contains(rendered, "8;;") {
+		t.Errorf("Rendered output should not contain '8;;' artifacts, got: %q", rendered)
+	}
+}
