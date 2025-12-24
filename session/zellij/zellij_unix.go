@@ -25,18 +25,27 @@ func (z *ZellijSession) monitorWindowSize() {
 		cols, rows, err := term.GetSize(int(os.Stdin.Fd()))
 		if err != nil {
 			if everyN.ShouldLog() {
-				log.ErrorLog.Printf("failed to get terminal size: %v", err)
+				log.ErrorLog.Printf("failed to get terminal size: %v (session: %s)", err, z.sanitizedName)
+			}
+			return
+		}
+
+		log.DebugLog.Printf("Window resize detected: %dx%d (session: %s)", cols, rows, z.sanitizedName)
+
+		if err := z.SetDetachedSize(cols, rows); err != nil {
+			if everyN.ShouldLog() {
+				log.ErrorLog.Printf("failed to update window size to %dx%d: %v (session: %s)",
+					cols, rows, err, z.sanitizedName)
 			}
 		} else {
-			if err := z.SetDetachedSize(cols, rows); err != nil {
-				if everyN.ShouldLog() {
-					log.ErrorLog.Printf("failed to update window size: %v", err)
-				}
-			}
+			log.DebugLog.Printf("Window size updated to %dx%d (session: %s)", cols, rows, z.sanitizedName)
 		}
 	}
-	// Set initial size
-	defer doUpdate()
+
+	// Apply initial resize immediately, BEFORE starting monitor goroutines
+	// This ensures the window size is correct when I/O starts
+	doUpdate()
+	log.DebugLog.Printf("Initial window size applied during attach (session: %s)", z.sanitizedName)
 
 	// Debounce resize events
 	z.wg.Add(2)

@@ -17,6 +17,17 @@ func (d *DockerSession) handleResize() {
 	signal.Notify(ch, syscall.SIGWINCH)
 	defer signal.Stop(ch)
 
+	// Apply initial resize immediately, BEFORE waiting for signals
+	if d.ptmx != nil {
+		width, height, err := term.GetSize(int(os.Stdin.Fd()))
+		if err == nil {
+			winsize := &pty.Winsize{Rows: uint16(height), Cols: uint16(width)}
+			if err := pty.Setsize(d.ptmx, winsize); err == nil {
+				d.termBuffer.Resize(height, width)
+			}
+		}
+	}
+
 	for {
 		select {
 		case <-d.ctx.Done():
