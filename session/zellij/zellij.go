@@ -246,21 +246,26 @@ func (z *ZellijSession) startPTYReader() {
 
 	z.ptyReaderCtx, z.ptyReaderCancel = context.WithCancel(context.Background())
 
+	// Capture references locally to avoid race conditions with stopPTYReader
+	ctx := z.ptyReaderCtx
+	ptmx := z.ptmx
+	termBuffer := z.termBuffer
+
 	go func() {
 		buf := make([]byte, 4096)
 		for {
 			select {
-			case <-z.ptyReaderCtx.Done():
+			case <-ctx.Done():
 				return
 			default:
 				// Read from PTY
-				n, err := z.ptmx.Read(buf)
+				n, err := ptmx.Read(buf)
 				if err != nil {
 					// PTY closed or error, stop reading
 					return
 				}
 				if n > 0 {
-					z.termBuffer.Write(buf[:n])
+					termBuffer.Write(buf[:n])
 				}
 			}
 		}
@@ -271,8 +276,9 @@ func (z *ZellijSession) startPTYReader() {
 func (z *ZellijSession) stopPTYReader() {
 	if z.ptyReaderCancel != nil {
 		z.ptyReaderCancel()
+		// Don't nil out ptyReaderCtx here - the goroutine may still be accessing it
+		// through the closure. The cancel is sufficient to stop the goroutine.
 		z.ptyReaderCancel = nil
-		z.ptyReaderCtx = nil
 	}
 }
 

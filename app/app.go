@@ -332,8 +332,9 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = stateDefault
 			return m, m.handleError(msg.err)
 		}
-		// Instance started successfully
-		instance := m.list.GetInstances()[m.list.NumInstances()-1]
+		// Instance started successfully - get last item from full list (not filtered)
+		allInstances := m.list.GetInstances()
+		instance := allInstances[len(allInstances)-1]
 		// Save after adding new instance
 		if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
 			return m, m.handleError(err)
@@ -491,7 +492,9 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			)
 		}
 
-		instance := m.list.GetInstances()[m.list.NumInstances()-1]
+		// Get last item from full list (not filtered by view mode)
+		allInstances := m.list.GetInstances()
+		instance := allInstances[len(allInstances)-1]
 		switch msg.Type {
 		// Start the instance (enable previews etc) and go back to the main menu state.
 		case tea.KeyEnter:
@@ -1090,6 +1093,8 @@ func (m *home) createInstanceWithPath(path string) (tea.Model, tea.Cmd) {
 	}
 
 	m.newInstanceFinalizer = m.list.AddInstance(instance)
+	// Reset filter to ensure new instance is visible (it's not archived)
+	m.list.ResetFilter()
 	m.list.SetSelectedInstance(m.list.NumInstances() - 1)
 	m.state = stateNew
 	m.menu.SetState(ui.StateNewInstance)

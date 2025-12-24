@@ -856,6 +856,12 @@ func (l *List) ShowingArchived() bool {
 	return l.filterMode == FilterArchived
 }
 
+// ResetFilter resets the filter mode to show all non-archived instances
+func (l *List) ResetFilter() {
+	l.filterMode = FilterAll
+	l.scrollOffset = 0
+}
+
 // MergeInstances merges instances loaded from disk with the current in-memory instances.
 // Merge strategy:
 // - Instances in diskInstances but not in memory: Add them
