@@ -2,6 +2,7 @@ package git
 
 import (
 	"claude-squad/log"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,49 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 )
+
+// ClaudeSettings represents the structure of .claude/settings.local.json
+type ClaudeSettings struct {
+	Permissions ClaudePermissions `json:"permissions"`
+}
+
+// ClaudePermissions represents the permissions section of Claude settings
+type ClaudePermissions struct {
+	Allow []string `json:"allow"`
+}
+
+// DefaultAllowedCommands are the commands that should be auto-approved in worktrees
+var DefaultAllowedCommands = []string{
+	"Bash(git:*)",
+	"Bash(gh:*)",
+}
+
+// createClaudeSettingsFile creates a .claude/settings.local.json file in the worktree
+// that auto-approves git and gh commands
+func (g *GitWorktree) createClaudeSettingsFile() error {
+	claudeDir := filepath.Join(g.worktreePath, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		return fmt.Errorf("failed to create .claude directory: %w", err)
+	}
+
+	settings := ClaudeSettings{
+		Permissions: ClaudePermissions{
+			Allow: DefaultAllowedCommands,
+		},
+	}
+
+	settingsJSON, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal settings: %w", err)
+	}
+
+	settingsPath := filepath.Join(claudeDir, "settings.local.json")
+	if err := os.WriteFile(settingsPath, settingsJSON, 0644); err != nil {
+		return fmt.Errorf("failed to write settings file: %w", err)
+	}
+
+	return nil
+}
 
 // Setup creates a new worktree for the session
 func (g *GitWorktree) Setup() error {
@@ -75,6 +119,11 @@ func (g *GitWorktree) setupFromExistingBranch() error {
 		return fmt.Errorf("failed to create worktree from branch %s: %w", g.branchName, err)
 	}
 
+	// Create Claude settings file to auto-approve git/gh commands
+	if err := g.createClaudeSettingsFile(); err != nil {
+		log.WarningLog.Printf("failed to create Claude settings file: %v", err)
+	}
+
 	g.reportProgress("Worktree ready")
 	return nil
 }
@@ -123,6 +172,11 @@ func (g *GitWorktree) setupNewWorktree() error {
 	g.reportProgress("Creating worktree...")
 	if _, err := g.runGitCommand(g.repoPath, "worktree", "add", "-b", g.branchName, g.worktreePath, headCommit); err != nil {
 		return fmt.Errorf("failed to create worktree from commit %s: %w", headCommit, err)
+	}
+
+	// Create Claude settings file to auto-approve git/gh commands
+	if err := g.createClaudeSettingsFile(); err != nil {
+		log.WarningLog.Printf("failed to create Claude settings file: %v", err)
 	}
 
 	g.reportProgress("Worktree ready")
