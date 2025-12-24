@@ -35,9 +35,6 @@ func RunDaemon(cfg *config.Config) error {
 
 	pollInterval := time.Duration(cfg.DaemonPollInterval) * time.Millisecond
 
-	// If we get an error for a session, it's likely that we'll keep getting the error. Log every 30 seconds.
-	everyN := log.NewEvery(60 * time.Second)
-
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
 	stopCh := make(chan struct{})
@@ -48,26 +45,15 @@ func RunDaemon(cfg *config.Config) error {
 			// Parallel update check - runs HasUpdated() concurrently
 			updateResults := session.ParallelUpdate(instances)
 
-			// Collect instances that need TapEnter and diff stats update
-			var needsDiffStats []*session.Instance
 			for _, result := range updateResults {
 				if result.Instance != nil && result.HasPrompt {
 					result.Instance.TapEnter()
-					needsDiffStats = append(needsDiffStats, result.Instance)
 				}
 			}
 
-			// Parallel diff stats update for instances that had prompts
-			if len(needsDiffStats) > 0 {
-				diffErrors := session.ParallelUpdateDiffStats(needsDiffStats)
-				for i, err := range diffErrors {
-					if err != nil && needsDiffStats[i] != nil {
-						if everyN.ShouldLog() {
-							log.WarningLog.Printf("could not update diff stats for %s: %v", needsDiffStats[i].Title, err)
-						}
-					}
-				}
-			}
+			// Background diff stats update - non-blocking, rate-limited
+			// (10s delay after activity, max once per 30s per instance)
+			session.BackgroundUpdateDiffStats(instances)
 
 			// Handle stop before ticker.
 			select {
