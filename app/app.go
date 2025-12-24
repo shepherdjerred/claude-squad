@@ -204,6 +204,18 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.menu.ClearKeydown()
 		return m, nil
 	case tickUpdateMetadataMessage:
+		// Check if state file was modified by another process and sync if needed
+		diskInstances, synced, err := m.storage.SyncFromDisk()
+		if err != nil {
+			log.WarningLog.Printf("failed to sync from disk: %v", err)
+		} else if synced && diskInstances != nil {
+			// Merge disk instances with in-memory instances
+			if m.list.MergeInstances(diskInstances) {
+				// If instances changed, update the UI
+				m.instanceChanged()
+			}
+		}
+
 		instances := m.list.GetInstances()
 
 		// Parallel update check - runs HasUpdated() concurrently

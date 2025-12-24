@@ -406,3 +406,74 @@ func (l *List) SetSelectedInstance(idx int) {
 func (l *List) GetInstances() []*session.Instance {
 	return l.items
 }
+
+// MergeInstances merges instances loaded from disk with the current in-memory instances.
+// Merge strategy:
+// - Instances in diskInstances but not in memory: Add them
+// - Instances in memory but not in diskInstances: Keep if session alive, remove if dead
+// - Instances in both: Keep in-memory version (more current)
+// Returns true if any changes were made.
+func (l *List) MergeInstances(diskInstances []*session.Instance) bool {
+	// Build a map of current in-memory instances by title
+	memoryMap := make(map[string]*session.Instance)
+	for _, inst := range l.items {
+		memoryMap[inst.Title] = inst
+	}
+
+	// Build a map of disk instances by title
+	diskMap := make(map[string]*session.Instance)
+	for _, inst := range diskInstances {
+		diskMap[inst.Title] = inst
+	}
+
+	changed := false
+
+	// Find instances to add (in disk but not in memory)
+	for title, diskInst := range diskMap {
+		if _, exists := memoryMap[title]; !exists {
+			// Add this instance
+			l.items = append(l.items, diskInst)
+			// Register the repo
+			repoName, err := diskInst.RepoName()
+			if err == nil {
+				l.addRepo(repoName)
+			}
+			log.InfoLog.Printf("Added instance from disk: %s", title)
+			changed = true
+		}
+	}
+
+	// Find instances to remove (in memory but not in disk, and session not alive)
+	newItems := make([]*session.Instance, 0, len(l.items))
+	for _, memInst := range l.items {
+		if _, existsOnDisk := diskMap[memInst.Title]; existsOnDisk {
+			// Instance exists on disk, keep it
+			newItems = append(newItems, memInst)
+		} else {
+			// Instance not on disk - was it deleted by another process?
+			if memInst.SessionAlive() {
+				// Session is still running, keep it (don't kill running sessions)
+				newItems = append(newItems, memInst)
+				log.InfoLog.Printf("Keeping running instance not on disk: %s", memInst.Title)
+			} else {
+				// Session is dead/paused and not on disk, remove it
+				repoName, err := memInst.RepoName()
+				if err == nil {
+					l.rmRepo(repoName)
+				}
+				log.InfoLog.Printf("Removed instance deleted from disk: %s", memInst.Title)
+				changed = true
+			}
+		}
+	}
+
+	if changed {
+		l.items = newItems
+		// Adjust selected index if needed
+		if l.selectedIdx >= len(l.items) {
+			l.selectedIdx = max(0, len(l.items)-1)
+		}
+	}
+
+	return changed
+}
