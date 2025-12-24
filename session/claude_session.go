@@ -3,6 +3,7 @@ package session
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,9 +11,17 @@ import (
 	"strings"
 )
 
+// ErrClaudeProjectNotFound is returned when Claude's project directory doesn't exist yet.
+// This is expected for new instances that haven't run Claude.
+var ErrClaudeProjectNotFound = errors.New("claude project directory not found")
+
+// ErrNoSessionFiles is returned when no session files are found in the Claude project directory.
+var ErrNoSessionFiles = errors.New("no session files found")
+
 // ExtractClaudeSessionID extracts the most recent Claude session ID from Claude's project files.
 // Claude stores session data in ~/.claude/projects/{project-dir}/ where project-dir is a
 // transformed version of the worktree path.
+// Returns ErrClaudeProjectNotFound if the directory doesn't exist yet (expected for new instances).
 func ExtractClaudeSessionID(worktreePath string) (string, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -27,7 +36,7 @@ func ExtractClaudeSessionID(worktreePath string) (string, error) {
 
 	// Check if the project directory exists
 	if _, err := os.Stat(projectDir); os.IsNotExist(err) {
-		return "", fmt.Errorf("claude project directory not found: %s", projectDir)
+		return "", ErrClaudeProjectNotFound
 	}
 
 	// Find the most recent .jsonl file (excluding agent- files)
@@ -46,7 +55,7 @@ func ExtractClaudeSessionID(worktreePath string) (string, error) {
 	}
 
 	if len(sessionFiles) == 0 {
-		return "", fmt.Errorf("no session files found in %s", projectDir)
+		return "", ErrNoSessionFiles
 	}
 
 	// Sort by modification time (newest first)
