@@ -44,6 +44,8 @@ const (
 	stateConfirm
 	// stateLoading is the state when a loading operation is in progress.
 	stateLoading
+	// stateRename is the state when the user is renaming an instance.
+	stateRename
 )
 
 type home struct {
@@ -466,6 +468,50 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 
 		return m, nil
+	} else if m.state == stateRename {
+		// Use the TextInputOverlay component to handle key events for renaming
+		shouldClose := m.textInputOverlay.HandleKeyPress(msg)
+
+		// Check if the form was submitted or canceled
+		if shouldClose {
+			selected := m.list.GetSelectedInstance()
+			if selected == nil {
+				m.textInputOverlay = nil
+				m.state = stateDefault
+				m.menu.SetState(ui.StateDefault)
+				return m, nil
+			}
+			if m.textInputOverlay.IsSubmitted() {
+				newTitle := m.textInputOverlay.GetValue()
+				if err := selected.Rename(newTitle); err != nil {
+					m.textInputOverlay = nil
+					m.state = stateDefault
+					m.menu.SetState(ui.StateDefault)
+					return m, m.handleError(err)
+				}
+				// Save the updated instance
+				if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+					m.textInputOverlay = nil
+					m.state = stateDefault
+					m.menu.SetState(ui.StateDefault)
+					return m, m.handleError(err)
+				}
+			}
+
+			// Close the overlay and reset state
+			m.textInputOverlay = nil
+			m.state = stateDefault
+			return m, tea.Batch(
+				tea.WindowSize(),
+				func() tea.Msg {
+					m.menu.SetState(ui.StateDefault)
+					return nil
+				},
+				m.instanceChanged(),
+			)
+		}
+
+		return m, nil
 	}
 
 	// Handle confirmation state
@@ -684,6 +730,16 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			m.state = stateDefault
 		})
 		return m, nil
+	case keys.KeyRename:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil {
+			return m, nil
+		}
+		// Enter rename mode with the current title pre-filled
+		m.state = stateRename
+		m.menu.SetState(ui.StateRename)
+		m.textInputOverlay = overlay.NewTextInputOverlay("Rename instance", selected.Title)
+		return m, nil
 	default:
 		return m, nil
 	}
@@ -817,7 +873,7 @@ func (m *home) View() string {
 		m.errBox.String(),
 	)
 
-	if m.state == statePrompt {
+	if m.state == statePrompt || m.state == stateRename {
 		if m.textInputOverlay == nil {
 			log.ErrorLog.Printf("text input overlay is nil")
 		}

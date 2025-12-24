@@ -40,6 +40,7 @@ const (
 	StateEmpty
 	StateNewInstance
 	StatePrompt
+	StateRename
 )
 
 type Menu struct {
@@ -56,6 +57,7 @@ type Menu struct {
 var defaultMenuOptions = []keys.KeyName{keys.KeyNew, keys.KeyPrompt, keys.KeyHelp, keys.KeyQuit}
 var newInstanceMenuOptions = []keys.KeyName{keys.KeySubmitName}
 var promptMenuOptions = []keys.KeyName{keys.KeySubmitName}
+var renameMenuOptions = []keys.KeyName{keys.KeySubmitName}
 
 func NewMenu() *Menu {
 	return &Menu{
@@ -117,12 +119,14 @@ func (m *Menu) updateOptions() {
 		m.options = newInstanceMenuOptions
 	case StatePrompt:
 		m.options = promptMenuOptions
+	case StateRename:
+		m.options = renameMenuOptions
 	}
 }
 
 func (m *Menu) addInstanceOptions() {
 	// Instance management group
-	options := []keys.KeyName{keys.KeyNew, keys.KeyKill, keys.KeyMoveUp, keys.KeyMoveDown}
+	options := []keys.KeyName{keys.KeyNew, keys.KeyKill, keys.KeyRename, keys.KeyMoveUp, keys.KeyMoveDown}
 
 	// Action group
 	actionGroup := []keys.KeyName{keys.KeyEnter, keys.KeySubmit}
@@ -161,9 +165,9 @@ func (m *Menu) String() string {
 		start int
 		end   int
 	}{
-		{0, 4}, // Instance management group (n, D, K, J)
-		{4, 7}, // Action group (enter, submit, pause/resume)
-		{8, 10}, // System group (tab, help, q)
+		{0, 5},  // Instance management group (n, D, R, K, J)
+		{5, 8},  // Action group (enter, submit, pause/resume)
+		{9, 11}, // System group (tab, help, q)
 	}
 
 	for i, k := range m.options {
