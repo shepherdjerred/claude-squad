@@ -15,6 +15,12 @@ import (
 const readyIcon = "● "
 const pausedIcon = "⏸ "
 
+// compactModeThreshold is the height below which the list switches to compact mode
+const compactModeThreshold = 35
+
+// titleAreaHeight is the number of lines used by the title area (2 newlines + title + 2 newlines)
+const titleAreaHeight = 5
+
 var readyStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#51bd73", Dark: "#51bd73"})
 
@@ -72,6 +78,19 @@ var selectedSummaryStyle = lipgloss.NewStyle().
 var filterStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
 
+// Compact mode styles with minimal padding
+var compactTitleStyle = lipgloss.NewStyle().
+	Padding(0, 1).
+	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
+
+var compactSelectedStyle = lipgloss.NewStyle().
+	Padding(0, 1).
+	Background(lipgloss.Color("#dde4f0")).
+	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#1a1a1a"})
+
+var scrollIndicatorStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#666666"})
+
 // FilterMode represents the current filter for the list view
 type FilterMode int
 
@@ -94,6 +113,12 @@ type List struct {
 
 	// filterMode controls the current filter view (ALL, NEEDS ATTENTION, or ARCHIVED)
 	filterMode FilterMode
+
+	// scrollOffset is the index of the first visible item in the list
+	scrollOffset int
+
+	// compactMode is true when the list is in compact mode (smaller terminal)
+	compactMode bool
 }
 
 func NewList(spinner *spinner.Model, autoYes bool) *List {
@@ -110,9 +135,111 @@ func (l *List) SetSize(width, height int) {
 	l.width = width
 	l.height = height
 	l.renderer.setWidth(width)
+
+	// Auto-detect compact mode based on height
+	l.compactMode = height < compactModeThreshold
+	l.renderer.compactMode = l.compactMode
+
+	// Re-adjust scroll when size changes
+	l.adjustScroll()
 }
 
-// SetSessionPreviewSize sets the height and width for the tmux sessions. This makes the stdout line have the correct
+// getItemHeight returns the height in lines for a single item
+func (l *List) getItemHeight(item *session.Instance) int {
+	if l.compactMode {
+		return 1 // Single line in compact mode
+	}
+	// Normal mode: title (with 1 padding top) + branch (with 1 padding bottom) = base height
+	// Plus 2 lines spacing between items (\n\n)
+	baseHeight := 4 // title row + branch row with padding
+	if item.Summary != "" {
+		baseHeight = 5 // add summary line
+	}
+	return baseHeight
+}
+
+// getVisibleRows returns the number of rows available for list items
+func (l *List) getVisibleRows() int {
+	return l.height - titleAreaHeight
+}
+
+// calculateVisibleRange returns the start and end indices of items that fit in the visible area
+func (l *List) calculateVisibleRange() (start, end int) {
+	visibleItems := l.GetVisibleInstances()
+	if len(visibleItems) == 0 {
+		return 0, 0
+	}
+
+	availableHeight := l.getVisibleRows()
+	if availableHeight <= 0 {
+		return 0, 0
+	}
+
+	currentHeight := 0
+	start = l.scrollOffset
+	end = start
+
+	for i := start; i < len(visibleItems); i++ {
+		itemHeight := l.getItemHeight(visibleItems[i])
+		if currentHeight+itemHeight <= availableHeight {
+			end = i + 1
+			currentHeight += itemHeight
+		} else {
+			break
+		}
+	}
+	return start, end
+}
+
+// adjustScroll ensures the selected item is visible by adjusting scrollOffset
+func (l *List) adjustScroll() {
+	visibleItems := l.GetVisibleInstances()
+	if len(visibleItems) == 0 {
+		l.scrollOffset = 0
+		return
+	}
+
+	// Ensure scrollOffset is valid
+	if l.scrollOffset >= len(visibleItems) {
+		l.scrollOffset = max(0, len(visibleItems)-1)
+	}
+
+	// If selected is above visible area, scroll up
+	if l.selectedIdx < l.scrollOffset {
+		l.scrollOffset = l.selectedIdx
+		return
+	}
+
+	// Calculate how many items fit from current scroll offset
+	availableHeight := l.getVisibleRows()
+	if availableHeight <= 0 {
+		return
+	}
+
+	currentHeight := 0
+	visibleCount := 0
+
+	for i := l.scrollOffset; i < len(visibleItems); i++ {
+		itemHeight := l.getItemHeight(visibleItems[i])
+		if currentHeight+itemHeight <= availableHeight {
+			visibleCount++
+			currentHeight += itemHeight
+		} else {
+			break
+		}
+	}
+
+	// If selected is below visible area, scroll down
+	if l.selectedIdx >= l.scrollOffset+visibleCount {
+		// Find new offset that makes selected item visible at the bottom
+		l.scrollOffset = l.selectedIdx - visibleCount + 1
+		if l.scrollOffset < 0 {
+			l.scrollOffset = 0
+		}
+	}
+}
+
+// SetSessionPreviewSize sets the height and width for the multiplexer sessions. This makes the stdout line have the correct
 // width and height.
 func (l *List) SetSessionPreviewSize(width, height int) (err error) {
 	for i, item := range l.items {
@@ -139,8 +266,9 @@ func (l *List) NumAllInstances() int {
 
 // InstanceRenderer handles rendering of session.Instance objects
 type InstanceRenderer struct {
-	spinner *spinner.Model
-	width   int
+	spinner     *spinner.Model
+	width       int
+	compactMode bool
 }
 
 func (r *InstanceRenderer) setWidth(width int) {
@@ -150,7 +278,64 @@ func (r *InstanceRenderer) setWidth(width int) {
 // ɹ and ɻ are other options.
 const branchIcon = "Ꮧ"
 
+// RenderCompact renders a single-line compact version of an instance for small screens
+func (r *InstanceRenderer) RenderCompact(i *session.Instance, idx int, selected bool) string {
+	prefix := fmt.Sprintf("%d.", idx)
+	if idx >= 10 {
+		prefix = fmt.Sprintf("%d.", idx)
+	}
+
+	// Status indicator
+	var statusIcon string
+	switch i.Status {
+	case session.Running:
+		statusIcon = r.spinner.View()
+	case session.Ready:
+		statusIcon = readyStyle.Render("●")
+	case session.Paused:
+		statusIcon = pausedStyle.Render("⏸")
+	default:
+		statusIcon = " "
+	}
+
+	// Branch (short, truncated)
+	branch := i.Branch
+	maxBranchLen := 15
+	if len(branch) > maxBranchLen {
+		branch = branch[:maxBranchLen-3] + "..."
+	}
+
+	// Calculate available width for title
+	// Layout: prefix + space + statusIcon + space + title + space + [branch]
+	fixedWidth := len(prefix) + 1 + 2 + 1 + 1 + len(branch) + 2 + 4 // extra padding
+	maxTitleWidth := r.width - fixedWidth
+	if maxTitleWidth < 10 {
+		maxTitleWidth = 10
+	}
+
+	// Title (truncated)
+	title := i.Title
+	if len(title) > maxTitleWidth {
+		if maxTitleWidth > 3 {
+			title = title[:maxTitleWidth-3] + "..."
+		} else {
+			title = title[:maxTitleWidth]
+		}
+	}
+
+	line := fmt.Sprintf("%s %s %s [%s]", prefix, statusIcon, title, branch)
+
+	if selected {
+		return compactSelectedStyle.Render(line)
+	}
+	return compactTitleStyle.Render(line)
+}
+
 func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, hasMultipleRepos bool) string {
+	// Use compact rendering in compact mode
+	if r.compactMode {
+		return r.RenderCompact(i, idx, selected)
+	}
 	prefix := fmt.Sprintf(" %d. ", idx)
 	if idx >= 10 {
 		prefix = prefix[:len(prefix)-1]
@@ -360,13 +545,29 @@ func (l *List) String() string {
 	// Get visible instances based on archive view mode
 	visibleItems := l.GetVisibleInstances()
 
-	// Render the list.
-	for i, item := range visibleItems {
+	// Calculate visible range for scrolling
+	start, end := l.calculateVisibleRange()
+
+	// Render only the visible items
+	for i := start; i < end && i < len(visibleItems); i++ {
+		item := visibleItems[i]
 		b.WriteString(l.renderer.Render(item, i+1, i == l.selectedIdx, len(l.repos) > 1))
-		if i != len(visibleItems)-1 {
-			b.WriteString("\n\n")
+		if i != end-1 && i != len(visibleItems)-1 {
+			if l.compactMode {
+				b.WriteString("\n")
+			} else {
+				b.WriteString("\n\n")
+			}
 		}
 	}
+
+	// Add scroll indicator if content is clipped
+	if len(visibleItems) > 0 && (start > 0 || end < len(visibleItems)) {
+		b.WriteString("\n")
+		scrollInfo := fmt.Sprintf(" [%d-%d of %d]", start+1, end, len(visibleItems))
+		b.WriteString(scrollIndicatorStyle.Render(scrollInfo))
+	}
+
 	return lipgloss.Place(l.width, l.height, lipgloss.Left, lipgloss.Top, b.String())
 }
 
@@ -380,7 +581,9 @@ func (l *List) Down() {
 		l.selectedIdx++
 	} else {
 		l.selectedIdx = 0
+		l.scrollOffset = 0 // Reset scroll when wrapping to top
 	}
+	l.adjustScroll()
 }
 
 // Kill removes the selected instance from the list and kills it asynchronously.
@@ -421,7 +624,7 @@ func (l *List) Kill() {
 	// Remove from the actual items list immediately.
 	l.items = append(l.items[:actualIdx], l.items[actualIdx+1:]...)
 
-	// Kill the tmux/zellij session and git worktree asynchronously to avoid blocking the UI.
+	// Kill the zellij session and git worktree asynchronously to avoid blocking the UI.
 	go func() {
 		if err := targetInstance.Kill(); err != nil {
 			log.ErrorLog.Printf("could not kill instance: %v", err)
@@ -447,8 +650,10 @@ func (l *List) Up() {
 	if l.selectedIdx > 0 {
 		l.selectedIdx--
 	} else {
-		l.selectedIdx = len(l.items) - 1
+		l.selectedIdx = len(visibleItems) - 1
+		// Don't reset scroll - adjustScroll will handle positioning
 	}
+	l.adjustScroll()
 }
 
 // MoveUp moves the selected instance up in the list (swaps with previous).
@@ -481,6 +686,7 @@ func (l *List) MoveUp() bool {
 	// Swap in the full list
 	l.items[currentIdx], l.items[prevIdx] = l.items[prevIdx], l.items[currentIdx]
 	l.selectedIdx--
+	l.adjustScroll()
 	return true
 }
 
@@ -514,6 +720,7 @@ func (l *List) MoveDown() bool {
 	// Swap in the full list
 	l.items[currentIdx], l.items[nextIdx] = l.items[nextIdx], l.items[currentIdx]
 	l.selectedIdx++
+	l.adjustScroll()
 	return true
 }
 
@@ -609,7 +816,8 @@ func (l *List) GetVisibleInstances() []*session.Instance {
 // NextFilter advances to the next filter mode (cycles through ALL -> NEEDS ATTENTION -> ARCHIVED -> ALL)
 func (l *List) NextFilter() {
 	l.filterMode = (l.filterMode + 1) % 3
-	l.selectedIdx = 0 // Reset selection when filter changes
+	l.selectedIdx = 0  // Reset selection when filter changes
+	l.scrollOffset = 0 // Reset scroll when filter changes
 }
 
 // PrevFilter goes to the previous filter mode (cycles backwards)
@@ -619,7 +827,8 @@ func (l *List) PrevFilter() {
 	} else {
 		l.filterMode--
 	}
-	l.selectedIdx = 0 // Reset selection when filter changes
+	l.selectedIdx = 0  // Reset selection when filter changes
+	l.scrollOffset = 0 // Reset scroll when filter changes
 }
 
 // GetFilterName returns a human-readable name for the current filter

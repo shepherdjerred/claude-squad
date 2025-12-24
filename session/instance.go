@@ -64,10 +64,14 @@ type Instance struct {
 	// SummaryUpdatedAt is when the summary was last updated
 	SummaryUpdatedAt time.Time
 
+	// Background diff calculation timing
+	lastDiffUpdate time.Time // When diff was last calculated
+	lastActivity   time.Time // When instance status last changed
+
 	// The below fields are initialized upon calling Start().
 
 	started bool
-	// session is the multiplexer session for the instance (tmux or zellij).
+	// session is the multiplexer session for the instance.
 	session Multiplexer
 	// multiplexerType is the type of multiplexer used for this instance.
 	multiplexerType MultiplexerType
@@ -100,7 +104,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		data.Worktree = GitWorktreeData{
 			RepoPath:      i.gitWorktree.GetRepoPath(),
 			WorktreePath:  i.gitWorktree.GetWorktreePath(),
-			SessionName:   i.Title,
+			SessionName:   i.gitWorktree.GetSessionName(),
 			BranchName:    i.gitWorktree.GetBranchName(),
 			BaseCommitSHA: i.gitWorktree.GetBaseCommitSHA(),
 		}
@@ -165,7 +169,8 @@ func NewInstanceFromOrphan(orphan *zellij.OrphanedSession) (*Instance, error) {
 	}
 
 	// Create Zellij session and restore connection to existing session
-	session := NewMultiplexer(MultiplexerZellij, instance.Title, instance.Program)
+	// Use the session name from gitWorktree for consistency
+	session := NewMultiplexer(MultiplexerZellij, instance.gitWorktree.GetSessionName(), instance.Program)
 	instance.session = session
 
 	// Restore connection to existing session
@@ -180,11 +185,8 @@ func NewInstanceFromOrphan(orphan *zellij.OrphanedSession) (*Instance, error) {
 
 // FromInstanceData creates a new Instance from serialized data
 func FromInstanceData(data InstanceData) (*Instance, error) {
-	// Parse multiplexer type, defaulting to tmux for backwards compatibility
-	mtype := MultiplexerType(data.Multiplexer)
-	if mtype == "" {
-		mtype = MultiplexerTmux
-	}
+	// Always use zellij (stored multiplexer type is ignored for backwards compatibility)
+	mtype := MultiplexerZellij
 
 	instance := &Instance{
 		Title:            data.Title,
@@ -217,7 +219,9 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 
 	if instance.Paused() || instance.Archived {
 		instance.started = true
-		instance.session = NewMultiplexer(mtype, instance.Title, instance.Program)
+		// Use the original session name from gitWorktree, not the display title,
+		// to correctly reconnect to existing multiplexer sessions after rename
+		instance.session = NewMultiplexer(mtype, instance.gitWorktree.GetSessionName(), instance.Program)
 	} else {
 		if err := instance.Start(false); err != nil {
 			return nil, err
@@ -237,8 +241,8 @@ type InstanceOptions struct {
 	Program string
 	// If AutoYes is true, then
 	AutoYes bool
-	// Multiplexer is the terminal multiplexer to use ("tmux" or "zellij").
-	// If empty, uses the default for the platform.
+	// Multiplexer is deprecated and ignored. Zellij is always used.
+	// This field is kept for backwards compatibility.
 	Multiplexer string
 }
 
@@ -251,11 +255,8 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	// Determine multiplexer type from options or use platform default
-	muxType := MultiplexerType(opts.Multiplexer)
-	if muxType == "" {
-		muxType = DefaultMultiplexer()
-	}
+	// Always use zellij (options.Multiplexer is ignored for backwards compatibility)
+	muxType := MultiplexerZellij
 
 	return &Instance{
 		Title:           opts.Title,
@@ -280,6 +281,7 @@ func (i *Instance) RepoName() (string, error) {
 
 func (i *Instance) SetStatus(status Status) {
 	i.Status = status
+	i.lastActivity = time.Now()
 }
 
 // StartWithProgress starts the instance with an optional progress callback.
@@ -298,20 +300,10 @@ func (i *Instance) startInternal(firstTimeSetup bool, progressCallback git.Progr
 		return fmt.Errorf("instance title cannot be empty")
 	}
 
-	// Use default multiplexer if not set
+	// Always use zellij
 	if i.multiplexerType == "" {
-		i.multiplexerType = DefaultMultiplexer()
+		i.multiplexerType = MultiplexerZellij
 	}
-
-	var session Multiplexer
-	if i.session != nil {
-		// Use existing session (useful for testing)
-		session = i.session
-	} else {
-		// Create new session using factory
-		session = NewMultiplexer(i.multiplexerType, i.Title, i.Program)
-	}
-	i.session = session
 
 	if firstTimeSetup {
 		gitWorktree, branchName, err := git.NewGitWorktree(i.Path, i.Title)
@@ -325,6 +317,19 @@ func (i *Instance) startInternal(firstTimeSetup bool, progressCallback git.Progr
 			i.gitWorktree.SetProgressCallback(progressCallback)
 		}
 	}
+
+	// Create the multiplexer session after gitWorktree is set up, so we can use the
+	// correct session name. For firstTimeSetup, gitWorktree was just created with i.Title.
+	// For restore (loading from storage), gitWorktree already has the original session name.
+	var session Multiplexer
+	if i.session != nil {
+		// Use existing session (useful for testing)
+		session = i.session
+	} else {
+		// Create new session using factory with the session name from gitWorktree
+		session = NewMultiplexer(i.multiplexerType, i.gitWorktree.GetSessionName(), i.Program)
+	}
+	i.session = session
 
 	// Setup error handler to cleanup resources on any error
 	var setupErr error
@@ -642,12 +647,31 @@ func (i *Instance) UpdateDiffStats() error {
 	}
 
 	i.diffStats = stats
+	i.lastDiffUpdate = time.Now()
 	return nil
 }
 
 // GetDiffStats returns the current git diff statistics
 func (i *Instance) GetDiffStats() *git.DiffStats {
 	return i.diffStats
+}
+
+// ShouldUpdateDiff returns true if the instance is due for a diff stats update.
+// Rate limiting: at least 10s since last activity, at most once per 30s.
+func (i *Instance) ShouldUpdateDiff() bool {
+	if !i.started || i.Status == Paused {
+		return false
+	}
+	now := time.Now()
+	// At least 30s since last diff calculation
+	if !i.lastDiffUpdate.IsZero() && now.Sub(i.lastDiffUpdate) < 30*time.Second {
+		return false
+	}
+	// At least 10s since last activity (status change)
+	if !i.lastActivity.IsZero() && now.Sub(i.lastActivity) < 10*time.Second {
+		return false
+	}
+	return true
 }
 
 // SendPrompt sends a prompt to the session
@@ -682,6 +706,13 @@ func (i *Instance) PreviewFullHistory() (string, error) {
 // SetSession sets the multiplexer session for testing purposes
 func (i *Instance) SetSession(session Multiplexer) {
 	i.session = session
+}
+
+// MarkAsStartedForTesting marks the instance as started for testing purposes.
+// This allows tests to bypass the real session startup while still testing
+// preview functionality.
+func (i *Instance) MarkAsStartedForTesting() {
+	i.started = true
 }
 
 // SendKeys sends keys to the session

@@ -58,6 +58,11 @@ type ZellijSession struct {
 	// Content cache for performance
 	contentCache *contentCache
 
+	// Terminal buffer for capturing PTY output with colors
+	termBuffer   *TerminalBuffer
+	ptyReaderCtx context.Context
+	ptyReaderCancel context.CancelFunc
+
 	// Initialized by Attach, deinitialized by Detach
 	attachCh chan struct{}
 	ctx      context.Context
@@ -81,6 +86,7 @@ func newZellijSession(name string, program string, cmdExec cmd.Executor) *Zellij
 		program:       program,
 		cmdExec:       cmdExec,
 		contentCache:  newContentCache(200 * time.Millisecond),
+		termBuffer:    NewTerminalBuffer(),
 	}
 }
 
@@ -91,7 +97,6 @@ func (z *ZellijSession) Start(workDir string) error {
 	}
 
 	// Create a temporary layout file that runs the program
-	// This is the Zellij equivalent of tmux's "new-session -d -s name command"
 	// KDL format for Zellij layouts
 	layoutContent := fmt.Sprintf(`layout {
     pane {
@@ -219,11 +224,63 @@ func (z *ZellijSession) Restore() error {
 	}
 	z.ptmx = ptmx
 	z.monitor = newStatusMonitor()
+
+	// Start background PTY reader to capture output with colors
+	z.startPTYReader()
+
 	return nil
+}
+
+// startPTYReader starts a background goroutine that reads from the PTY
+// and feeds the output to the terminal buffer for color capture.
+func (z *ZellijSession) startPTYReader() {
+	// Stop any existing reader
+	if z.ptyReaderCancel != nil {
+		z.ptyReaderCancel()
+	}
+
+	// Reset the terminal buffer for fresh capture
+	if z.termBuffer != nil {
+		z.termBuffer.Reset()
+	}
+
+	z.ptyReaderCtx, z.ptyReaderCancel = context.WithCancel(context.Background())
+
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			select {
+			case <-z.ptyReaderCtx.Done():
+				return
+			default:
+				// Read from PTY
+				n, err := z.ptmx.Read(buf)
+				if err != nil {
+					// PTY closed or error, stop reading
+					return
+				}
+				if n > 0 {
+					z.termBuffer.Write(buf[:n])
+				}
+			}
+		}
+	}()
+}
+
+// stopPTYReader stops the background PTY reader goroutine.
+func (z *ZellijSession) stopPTYReader() {
+	if z.ptyReaderCancel != nil {
+		z.ptyReaderCancel()
+		z.ptyReaderCancel = nil
+		z.ptyReaderCtx = nil
+	}
 }
 
 // Attach attaches to the session for interactive use.
 func (z *ZellijSession) Attach() (chan struct{}, error) {
+	// Stop PTY reader - we'll use direct I/O during attach
+	z.stopPTYReader()
+
 	z.attachCh = make(chan struct{})
 	z.wg = &sync.WaitGroup{}
 	z.wg.Add(1)
@@ -326,6 +383,9 @@ func (z *ZellijSession) DetachSafely() error {
 
 	var errs []error
 
+	// Stop PTY reader before closing PTY
+	z.stopPTYReader()
+
 	if z.ptmx != nil {
 		if err := z.ptmx.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("error closing PTY: %w", err))
@@ -359,6 +419,9 @@ func (z *ZellijSession) DetachSafely() error {
 // Close terminates the session and cleans up resources.
 func (z *ZellijSession) Close() error {
 	var errs []error
+
+	// Stop PTY reader before closing PTY
+	z.stopPTYReader()
 
 	if z.ptmx != nil {
 		if err := z.ptmx.Close(); err != nil {
@@ -465,12 +528,23 @@ func readCaptureFileWithRetry(filePath string) ([]byte, error) {
 }
 
 // CapturePaneContent captures the current pane content.
+// Uses the terminal buffer for colored output when available.
 func (z *ZellijSession) CapturePaneContent() (string, error) {
 	// Check cache first
 	if content, _, valid := z.contentCache.Get(); valid {
 		return content, nil
 	}
 
+	// Try to get content from terminal buffer (with colors)
+	if z.termBuffer != nil {
+		rendered := z.termBuffer.Render()
+		if len(strings.TrimSpace(rendered)) > 0 {
+			z.contentCache.Set(rendered)
+			return rendered, nil
+		}
+	}
+
+	// Fall back to dump-screen (no colors, but works during startup)
 	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("zellij_capture_%s_%d.txt", z.sanitizedName, time.Now().UnixNano()))
 	defer os.Remove(tmpFile)
 
@@ -563,6 +637,11 @@ func (z *ZellijSession) DoesSessionExist() bool {
 
 // SetDetachedSize sets the pane dimensions while detached.
 func (z *ZellijSession) SetDetachedSize(width, height int) error {
+	// Also resize the terminal buffer
+	if z.termBuffer != nil {
+		z.termBuffer.Resize(height, width)
+	}
+
 	if z.ptmx == nil {
 		return nil
 	}

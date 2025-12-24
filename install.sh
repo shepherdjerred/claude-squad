@@ -30,8 +30,10 @@ setup_shell_and_path() {
 
 detect_platform_and_arch() {
     PLATFORM="$(uname | tr '[:upper:]' '[:lower:]')"
-    if [[ "$PLATFORM" == mingw*_nt* ]]; then
-        PLATFORM="windows"
+    if [[ "$PLATFORM" == mingw*_nt* ]] || [[ "$PLATFORM" == "windows" ]]; then
+        echo "Error: Windows is not supported. Zellij (required dependency) does not support Windows."
+        echo "Please use WSL (Windows Subsystem for Linux) instead."
+        exit 1
     fi
 
     ARCHITECTURE="$(uname -m)"
@@ -48,13 +50,8 @@ detect_platform_and_arch() {
         ARCHITECTURE="amd64" # Amd.
     fi
 
-    if [[ "$PLATFORM" == "windows" ]]; then
-        ARCHIVE_EXT=".zip"
-        EXTENSION=".exe"
-    else
-        ARCHIVE_EXT=".tar.gz"
-        EXTENSION=""
-    fi
+    ARCHIVE_EXT=".tar.gz"
+    EXTENSION=""
 }
 
 get_latest_version() {
@@ -116,21 +113,12 @@ extract_and_install() {
     local bin_dir=$3
     local extension=$4
 
-    if [[ "$PLATFORM" == "windows" ]]; then
-        if ! unzip -t "${tmp_dir}/${archive_name}" > /dev/null 2>&1; then
-            echo "Error: Downloaded file is not a valid zip archive"
-            rm -rf "$tmp_dir"
-            exit 1
-        fi
-        ensure unzip "${tmp_dir}/${archive_name}" -d "$tmp_dir"
-    else
-        if ! tar tzf "${tmp_dir}/${archive_name}" > /dev/null 2>&1; then
-            echo "Error: Downloaded file is not a valid tar.gz archive"
-            rm -rf "$tmp_dir"
-            exit 1
-        fi
-        ensure tar xzf "${tmp_dir}/${archive_name}" -C "$tmp_dir"
+    if ! tar tzf "${tmp_dir}/${archive_name}" > /dev/null 2>&1; then
+        echo "Error: Downloaded file is not a valid tar.gz archive"
+        rm -rf "$tmp_dir"
+        exit 1
     fi
+    ensure tar xzf "${tmp_dir}/${archive_name}" -C "$tmp_dir"
 
     if [ ! -d "$bin_dir" ]; then
         mkdir -p "$bin_dir"
@@ -175,49 +163,55 @@ check_command_exists() {
 
 check_and_install_dependencies() {
     echo "Checking for required dependencies..."
-    
-    # Check for tmux
-    if ! command -v tmux &> /dev/null; then
-        echo "tmux is not installed. Installing tmux..."
-        
+
+    # Check for zellij
+    if ! command -v zellij &> /dev/null; then
+        echo "zellij is not installed. Installing zellij..."
+
         if [[ "$PLATFORM" == "darwin" ]]; then
             # macOS
             if command -v brew &> /dev/null; then
-                ensure brew install tmux
+                ensure brew install zellij
             else
-                echo "Homebrew is not installed. Please install Homebrew first to install tmux."
+                echo "Homebrew is not installed. Please install Homebrew first to install zellij."
                 echo "Visit https://brew.sh for installation instructions."
                 exit 1
             fi
         elif [[ "$PLATFORM" == "linux" ]]; then
-            # Linux
-            if command -v apt-get &> /dev/null; then
-                ensure sudo apt-get update
-                ensure sudo apt-get install -y tmux
+            # Linux - use cargo or download binary
+            if command -v cargo &> /dev/null; then
+                echo "Installing zellij via cargo..."
+                ensure cargo install zellij
+            elif command -v apt-get &> /dev/null; then
+                # Try apt first (available on newer Ubuntu/Debian)
+                echo "Attempting to install zellij via apt..."
+                if ! sudo apt-get update && sudo apt-get install -y zellij 2>/dev/null; then
+                    echo "zellij not available in apt, installing via binary download..."
+                    install_zellij_binary
+                fi
             elif command -v dnf &> /dev/null; then
-                ensure sudo dnf install -y tmux
-            elif command -v yum &> /dev/null; then
-                ensure sudo yum install -y tmux
+                echo "Attempting to install zellij via dnf..."
+                if ! sudo dnf install -y zellij 2>/dev/null; then
+                    echo "zellij not available in dnf, installing via binary download..."
+                    install_zellij_binary
+                fi
             elif command -v pacman &> /dev/null; then
-                ensure sudo pacman -S --noconfirm tmux
+                ensure sudo pacman -S --noconfirm zellij
             else
-                echo "Could not determine package manager. Please install tmux manually."
-                exit 1
+                echo "Installing zellij via binary download..."
+                install_zellij_binary
             fi
-        elif [[ "$PLATFORM" == "windows" ]]; then
-            echo "For Windows, please install tmux via WSL or another method."
-            exit 1
         fi
-        
-        echo "tmux installed successfully."
+
+        echo "zellij installed successfully."
     else
-        echo "tmux is already installed."
+        echo "zellij is already installed."
     fi
-    
+
     # Check for GitHub CLI (gh)
     if ! command -v gh &> /dev/null; then
         echo "GitHub CLI (gh) is not installed. Installing GitHub CLI..."
-        
+
         if [[ "$PLATFORM" == "darwin" ]]; then
             # macOS
             if command -v brew &> /dev/null; then
@@ -251,18 +245,50 @@ check_and_install_dependencies() {
                 echo "Visit https://github.com/cli/cli#installation for installation instructions."
                 exit 1
             fi
-        elif [[ "$PLATFORM" == "windows" ]]; then
-            echo "For Windows, please install GitHub CLI manually."
-            echo "Visit https://github.com/cli/cli#installation for installation instructions."
-            exit 1
         fi
-        
+
         echo "GitHub CLI (gh) installed successfully."
     else
         echo "GitHub CLI (gh) is already installed."
     fi
-    
+
     echo "All dependencies are installed."
+}
+
+install_zellij_binary() {
+    # Download and install zellij binary directly
+    local zellij_version
+    zellij_version=$(curl -sS "https://api.github.com/repos/zellij-org/zellij/releases/latest" | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
+
+    if [ -z "$zellij_version" ]; then
+        echo "Failed to get latest zellij version. Please install zellij manually."
+        echo "Visit https://zellij.dev/documentation/installation for installation instructions."
+        exit 1
+    fi
+
+    local zellij_arch
+    if [ "$ARCHITECTURE" = "arm64" ]; then
+        zellij_arch="aarch64"
+    else
+        zellij_arch="x86_64"
+    fi
+
+    local zellij_url="https://github.com/zellij-org/zellij/releases/download/v${zellij_version}/zellij-${zellij_arch}-unknown-linux-musl.tar.gz"
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+
+    echo "Downloading zellij v${zellij_version}..."
+    if ! curl -sS -L -f "$zellij_url" -o "${tmp_dir}/zellij.tar.gz"; then
+        echo "Failed to download zellij. Please install manually."
+        echo "Visit https://zellij.dev/documentation/installation for installation instructions."
+        rm -rf "$tmp_dir"
+        exit 1
+    fi
+
+    ensure tar xzf "${tmp_dir}/zellij.tar.gz" -C "$tmp_dir"
+    ensure sudo mv "${tmp_dir}/zellij" /usr/local/bin/zellij
+    ensure sudo chmod +x /usr/local/bin/zellij
+    rm -rf "$tmp_dir"
 }
 
 main() {

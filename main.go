@@ -8,23 +8,20 @@ import (
 	"claude-squad/log"
 	"claude-squad/session"
 	"claude-squad/session/git"
-	"claude-squad/session/tmux"
 	"claude-squad/session/zellij"
 	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"runtime"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	version         = "1.0.13"
-	programFlag     string
-	autoYesFlag     bool
-	daemonFlag      bool
-	multiplexerFlag string
+	version     = "1.0.13"
+	programFlag string
+	autoYesFlag bool
+	daemonFlag  bool
 	rootCmd     = &cobra.Command{
 		Use:   "claude-squad",
 		Short: "Claude Squad - Manage multiple AI agents like Claude Code, Aider, Codex, and Amp.",
@@ -40,16 +37,6 @@ var (
 				return err
 			}
 
-			// Check if we're in a git repository
-			currentDir, err := filepath.Abs(".")
-			if err != nil {
-				return fmt.Errorf("failed to get current directory: %w", err)
-			}
-
-			if !git.IsGitRepo(currentDir) {
-				return fmt.Errorf("error: claude-squad must be run from within a git repository")
-			}
-
 			cfg := config.LoadConfig()
 
 			// Program flag overrides config
@@ -61,17 +48,6 @@ var (
 			autoYes := cfg.AutoYes
 			if autoYesFlag {
 				autoYes = true
-			}
-			// Multiplexer flag overrides config
-			if multiplexerFlag != "" {
-				if multiplexerFlag != "tmux" && multiplexerFlag != "zellij" {
-					return fmt.Errorf("invalid multiplexer: %s (must be 'tmux' or 'zellij')", multiplexerFlag)
-				}
-				// Zellij is not supported on Windows
-				if multiplexerFlag == "zellij" && runtime.GOOS == "windows" {
-					return fmt.Errorf("zellij is not supported on Windows, use tmux instead")
-				}
-				cfg.Multiplexer = multiplexerFlag
 			}
 			if autoYes {
 				defer func() {
@@ -106,22 +82,12 @@ var (
 			}
 			fmt.Println("Storage has been reset successfully")
 
-			// Clean up tmux sessions
-			if err := tmux.CleanupSessions(cmd2.MakeExecutor()); err != nil {
-				// Log but don't fail - tmux might not be installed
-				log.WarningLog.Printf("failed to cleanup tmux sessions: %v", err)
+			// Clean up zellij sessions
+			if err := zellij.CleanupSessions(cmd2.MakeExecutor()); err != nil {
+				// Log but don't fail - zellij might not be installed
+				log.WarningLog.Printf("failed to cleanup zellij sessions: %v", err)
 			} else {
-				fmt.Println("Tmux sessions have been cleaned up")
-			}
-
-			// Clean up zellij sessions (only on non-Windows)
-			if runtime.GOOS != "windows" {
-				if err := zellij.CleanupSessions(cmd2.MakeExecutor()); err != nil {
-					// Log but don't fail - zellij might not be installed
-					log.WarningLog.Printf("failed to cleanup zellij sessions: %v", err)
-				} else {
-					fmt.Println("Zellij sessions have been cleaned up")
-				}
+				fmt.Println("Zellij sessions have been cleaned up")
 			}
 
 			if err := git.CleanupWorktrees(); err != nil {
@@ -177,8 +143,6 @@ func init() {
 		"[experimental] If enabled, all instances will automatically accept prompts")
 	rootCmd.Flags().BoolVar(&daemonFlag, "daemon", false, "Run a program that loads all sessions"+
 		" and runs autoyes mode on them.")
-	rootCmd.Flags().StringVarP(&multiplexerFlag, "multiplexer", "m", "",
-		"Terminal multiplexer to use ('tmux' or 'zellij'). Defaults to zellij on Unix, tmux on Windows.")
 
 	// Hide the daemonFlag as it's only for internal use
 	err := rootCmd.Flags().MarkHidden("daemon")

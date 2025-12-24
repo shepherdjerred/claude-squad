@@ -48,6 +48,7 @@ func ParallelUpdate(instances []*Instance) []UpdateResult {
 }
 
 // ParallelUpdateDiffStats updates diff stats for all instances concurrently.
+// Deprecated: Use BackgroundUpdateDiffStats for non-blocking updates with rate limiting.
 func ParallelUpdateDiffStats(instances []*Instance) []error {
 	errors := make([]error, len(instances))
 	var wg sync.WaitGroup
@@ -72,4 +73,19 @@ func ParallelUpdateDiffStats(instances []*Instance) []error {
 
 	wg.Wait()
 	return errors
+}
+
+// BackgroundUpdateDiffStats spawns background goroutines to update diff stats
+// for instances that are due for an update. Non-blocking - returns immediately.
+// Rate limiting: 10s delay after activity, max once per 30s per instance.
+func BackgroundUpdateDiffStats(instances []*Instance) {
+	for _, instance := range instances {
+		if instance == nil || !instance.ShouldUpdateDiff() {
+			continue
+		}
+
+		go func(inst *Instance) {
+			_ = inst.UpdateDiffStats()
+		}(instance)
+	}
 }
