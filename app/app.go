@@ -665,8 +665,12 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, tea.Batch(highlightCmd, m.instanceChanged(), m.requestSave())
 		}
 		return m, tea.Batch(highlightCmd, m.instanceChanged())
-	case keys.KeyToggleArchive:
-		m.list.ToggleArchiveView()
+	case keys.KeyFilterLeft:
+		m.list.PrevFilter()
+		m.menu.SetShowingArchived(m.list.ShowingArchived())
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
+	case keys.KeyFilterRight:
+		m.list.NextFilter()
 		m.menu.SetShowingArchived(m.list.ShowingArchived())
 		return m, tea.Batch(highlightCmd, m.instanceChanged())
 	case keys.KeyArchive:

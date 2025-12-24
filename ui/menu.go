@@ -57,7 +57,7 @@ type Menu struct {
 	showingArchived bool
 }
 
-var defaultMenuOptions = []keys.KeyName{keys.KeyNew, keys.KeyPrompt, keys.KeyToggleArchive, keys.KeyHelp, keys.KeyQuit}
+var defaultMenuOptions = []keys.KeyName{keys.KeyNew, keys.KeyPrompt, keys.KeyHelp, keys.KeyQuit}
 var newInstanceMenuOptions = []keys.KeyName{keys.KeySubmitName}
 var promptMenuOptions = []keys.KeyName{keys.KeySubmitName}
 var renameMenuOptions = []keys.KeyName{keys.KeySubmitName}
@@ -151,7 +151,7 @@ func (m *Menu) addInstanceOptions() {
 	}
 
 	// System group
-	systemGroup := []keys.KeyName{keys.KeyToggleArchive, keys.KeyTab, keys.KeyHelp, keys.KeyQuit}
+	systemGroup := []keys.KeyName{keys.KeyFilterLeft, keys.KeyFilterRight, keys.KeyTab, keys.KeyHelp, keys.KeyQuit}
 
 	// Combine all groups
 	options = append(options, actionGroup...)

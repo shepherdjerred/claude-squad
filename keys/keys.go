@@ -37,8 +37,11 @@ const (
 	KeyRename
 
 	// Archive keybindings
-	KeyArchive       // Archive the selected instance
-	KeyToggleArchive // Toggle between archived and active view
+	KeyArchive // Archive the selected instance
+
+	// Filter keybindings
+	KeyFilterLeft  // Previous filter
+	KeyFilterRight // Next filter
 
 	// Import orphaned sessions
 	KeyImport
@@ -65,10 +68,11 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"r":          KeyResume,
 	"p":          KeySubmit,
 	"?":          KeyHelp,
-	"R":          KeyRename,
-	"A":          KeyArchive,
-	"a":          KeyToggleArchive,
-	"i":          KeyImport,
+	"R":     KeyRename,
+	"A":     KeyArchive,
+	"left":  KeyFilterLeft,
+	"right": KeyFilterRight,
+	"i":     KeyImport,
 }
 
 // GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
@@ -145,9 +149,13 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 		key.WithKeys("A"),
 		key.WithHelp("A", "archive"),
 	),
-	KeyToggleArchive: key.NewBinding(
-		key.WithKeys("a"),
-		key.WithHelp("a", "archived"),
+	KeyFilterLeft: key.NewBinding(
+		key.WithKeys("left"),
+		key.WithHelp("←", "prev filter"),
+	),
+	KeyFilterRight: key.NewBinding(
+		key.WithKeys("right"),
+		key.WithHelp("→", "next filter"),
 	),
 	KeyImport: key.NewBinding(
 		key.WithKeys("i"),

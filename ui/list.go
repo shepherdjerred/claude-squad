@@ -75,6 +75,9 @@ var selectedSummaryStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#444444", Dark: "#444444"}).
 	Italic(true)
 
+var filterStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
+
 // Compact mode styles with minimal padding
 var compactTitleStyle = lipgloss.NewStyle().
 	Padding(0, 1).
@@ -88,6 +91,15 @@ var compactSelectedStyle = lipgloss.NewStyle().
 var scrollIndicatorStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#666666"})
 
+// FilterMode represents the current filter for the list view
+type FilterMode int
+
+const (
+	FilterAll FilterMode = iota
+	FilterNeedsAttention
+	FilterArchived
+)
+
 type List struct {
 	items         []*session.Instance
 	selectedIdx   int
@@ -99,8 +111,8 @@ type List struct {
 	// multiple repos in play.
 	repos map[string]int
 
-	// showArchived controls whether to show archived or active instances
-	showArchived bool
+	// filterMode controls the current filter view (ALL, NEEDS ATTENTION, or ARCHIVED)
+	filterMode FilterMode
 
 	// scrollOffset is the index of the first visible item in the list
 	scrollOffset int
@@ -501,9 +513,6 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 
 func (l *List) String() string {
 	titleText := " Instances "
-	if l.showArchived {
-		titleText = " Archived "
-	}
 	const autoYesText = " auto-yes "
 
 	// Write the title.
@@ -527,6 +536,10 @@ func (l *List) String() string {
 	}
 
 	b.WriteString("\n")
+
+	// Write filter indicator
+	filterIndicator := fmt.Sprintf(" ◀ %s ▶ ", l.GetFilterName())
+	b.WriteString(filterStyle.Render(filterIndicator))
 	b.WriteString("\n")
 
 	// Get visible instances based on archive view mode
@@ -778,27 +791,61 @@ func (l *List) GetInstances() []*session.Instance {
 	return l.items
 }
 
-// GetVisibleInstances returns instances based on the current view mode (archived or active)
+// GetVisibleInstances returns instances based on the current filter mode
 func (l *List) GetVisibleInstances() []*session.Instance {
 	var visible []*session.Instance
 	for _, item := range l.items {
-		if item.Archived == l.showArchived {
-			visible = append(visible, item)
+		switch l.filterMode {
+		case FilterAll:
+			if !item.Archived {
+				visible = append(visible, item)
+			}
+		case FilterNeedsAttention:
+			if !item.Archived && item.Status == session.Ready {
+				visible = append(visible, item)
+			}
+		case FilterArchived:
+			if item.Archived {
+				visible = append(visible, item)
+			}
 		}
 	}
 	return visible
 }
 
-// ToggleArchiveView toggles between showing archived and active instances
-func (l *List) ToggleArchiveView() {
-	l.showArchived = !l.showArchived
-	l.selectedIdx = 0    // Reset selection when toggling
-	l.scrollOffset = 0   // Reset scroll when toggling
+// NextFilter advances to the next filter mode (cycles through ALL -> NEEDS ATTENTION -> ARCHIVED -> ALL)
+func (l *List) NextFilter() {
+	l.filterMode = (l.filterMode + 1) % 3
+	l.selectedIdx = 0  // Reset selection when filter changes
+	l.scrollOffset = 0 // Reset scroll when filter changes
+}
+
+// PrevFilter goes to the previous filter mode (cycles backwards)
+func (l *List) PrevFilter() {
+	if l.filterMode == 0 {
+		l.filterMode = FilterArchived
+	} else {
+		l.filterMode--
+	}
+	l.selectedIdx = 0  // Reset selection when filter changes
+	l.scrollOffset = 0 // Reset scroll when filter changes
+}
+
+// GetFilterName returns a human-readable name for the current filter
+func (l *List) GetFilterName() string {
+	switch l.filterMode {
+	case FilterNeedsAttention:
+		return "NEEDS ATTENTION"
+	case FilterArchived:
+		return "ARCHIVED"
+	default:
+		return "ALL"
+	}
 }
 
 // ShowingArchived returns true if currently showing archived instances
 func (l *List) ShowingArchived() bool {
-	return l.showArchived
+	return l.filterMode == FilterArchived
 }
 
 // MergeInstances merges instances loaded from disk with the current in-memory instances.
