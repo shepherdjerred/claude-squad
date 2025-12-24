@@ -4,6 +4,7 @@ package log
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -26,6 +27,8 @@ var debugLogFileName = filepath.Join(os.TempDir(), "claudesquad-debug.log")
 // Call this after Initialize() in main.
 func InitDebug() {
 	if os.Getenv("CS_DEBUG") != "1" {
+		// Initialize DebugLog as a no-op logger to prevent nil pointer panics
+		DebugLog = log.New(io.Discard, "", 0)
 		return
 	}
 
@@ -36,6 +39,8 @@ func InitDebug() {
 		if ErrorLog != nil {
 			ErrorLog.Printf("could not open debug log file: %s", err)
 		}
+		// Fall back to no-op logger on error
+		DebugLog = log.New(io.Discard, "", 0)
 		return
 	}
 

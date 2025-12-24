@@ -367,15 +367,14 @@ func (z *ZellijSession) Detach() {
 	}()
 
 	if err := z.ptmx.Close(); err != nil {
-		msg := fmt.Sprintf("error closing PTY: %v", err)
-		log.ErrorLog.Println(msg)
-		panic(msg)
+		// PTY close can fail legitimately (e.g., if session already terminated)
+		// Just log the error and continue cleanup
+		log.DebugLog.Printf("error closing PTY: %v", err)
 	}
 
 	if err := z.Restore(); err != nil {
-		msg := fmt.Sprintf("error restoring after detach: %v", err)
-		log.ErrorLog.Println(msg)
-		panic(msg)
+		// Restore can fail if session already terminated - log but don't panic
+		log.DebugLog.Printf("error restoring after detach: %v", err)
 	}
 
 	z.cancel()
@@ -689,7 +688,9 @@ func detectProgramRunning(content, program string) bool {
 
 	// If content is empty or very short, assume program is not running
 	if contentLen < 10 {
-		log.DebugLog.Printf("[detectProgramRunning] Content too short (%d chars), assuming not running", contentLen)
+		if log.DebugLog != nil {
+			log.DebugLog.Printf("[detectProgramRunning] Content too short (%d chars), assuming not running", contentLen)
+		}
 		return false
 	}
 
@@ -705,7 +706,9 @@ func detectProgramRunning(content, program string) bool {
 
 	for _, indicator := range programRunningIndicators {
 		if strings.Contains(content, indicator) {
-			log.DebugLog.Printf("[detectProgramRunning] Found program indicator '%s', program is running", indicator)
+			if log.DebugLog != nil {
+				log.DebugLog.Printf("[detectProgramRunning] Found program indicator '%s', program is running", indicator)
+			}
 			return true
 		}
 	}
@@ -737,21 +740,27 @@ func detectProgramRunning(content, program string) bool {
 		// Check for explicit shell prompts
 		for _, pattern := range shellPromptPatterns {
 			if strings.Contains(line, pattern) {
-				log.DebugLog.Printf("[detectProgramRunning] Found shell prompt pattern '%s' in line '%s', program NOT running", pattern, line)
+				if log.DebugLog != nil {
+					log.DebugLog.Printf("[detectProgramRunning] Found shell prompt pattern '%s' in line '%s', program NOT running", pattern, line)
+				}
 				return false
 			}
 		}
 
 		// Check for user@host:path$ pattern (common shell prompt)
 		if strings.Contains(line, "@") && (strings.HasSuffix(line, "$ ") || strings.HasSuffix(line, "# ") || strings.HasSuffix(line, "% ")) {
-			log.DebugLog.Printf("[detectProgramRunning] Found user@host shell prompt in line '%s', program NOT running", line)
+			if log.DebugLog != nil {
+				log.DebugLog.Printf("[detectProgramRunning] Found user@host shell prompt in line '%s', program NOT running", line)
+			}
 			return false
 		}
 	}
 
 	// If we didn't find explicit indicators either way, assume program is running
 	// This is a conservative default to avoid false restarts
-	log.DebugLog.Printf("[detectProgramRunning] No definitive indicators found, assuming program is running (conservative)")
+	if log.DebugLog != nil {
+		log.DebugLog.Printf("[detectProgramRunning] No definitive indicators found, assuming program is running (conservative)")
+	}
 	return true
 }
 
