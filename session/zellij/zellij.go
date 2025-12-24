@@ -658,6 +658,110 @@ func (z *ZellijSession) GetProgram() string {
 	return z.program
 }
 
+// IsProgramRunning checks if the configured program is actively running in the session.
+// Returns true if the program appears to be running, false if we see a shell prompt
+// or other indicators that the program has exited.
+func (z *ZellijSession) IsProgramRunning() (bool, error) {
+	content, err := z.CapturePaneContent()
+	if err != nil {
+		return false, fmt.Errorf("failed to capture pane content: %w", err)
+	}
+
+	return detectProgramRunning(content, z.program), nil
+}
+
+// detectProgramRunning analyzes terminal content to determine if a program is running.
+func detectProgramRunning(content, program string) bool {
+	// If content is empty or very short, assume program is not running
+	if len(strings.TrimSpace(content)) < 10 {
+		return false
+	}
+
+	// Check for program-specific indicators that it IS running
+	programRunningIndicators := []string{
+		"Do you trust the files",      // Claude trust prompt
+		"Claude Code",                  // Claude startup
+		"No, and tell Claude",          // Claude permission prompt
+		"(Y)es/(N)o/(D)on't ask again", // Aider prompt
+		"Yes, allow once",              // Gemini prompt
+		"Open documentation url",       // Aider startup
+	}
+
+	for _, indicator := range programRunningIndicators {
+		if strings.Contains(content, indicator) {
+			return true
+		}
+	}
+
+	// Get the last few non-empty lines to check for shell prompts
+	lines := strings.Split(content, "\n")
+	var lastLines []string
+	for i := len(lines) - 1; i >= 0 && len(lastLines) < 5; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" {
+			lastLines = append(lastLines, line)
+		}
+	}
+
+	// Shell prompt patterns that indicate the program is NOT running
+	shellPromptPatterns := []string{
+		"$ ",           // bash prompt
+		"% ",           // zsh prompt
+		"# ",           // root prompt
+		"❯ ",           // starship/fancy prompts
+		"➜ ",           // oh-my-zsh
+		"[exited]",     // process exited indicator
+		"[Exited]",     // process exited indicator
+		"exited with",  // exit message
+	}
+
+	// Check if any of the last lines contain shell prompt patterns
+	for _, line := range lastLines {
+		// Check for explicit shell prompts
+		for _, pattern := range shellPromptPatterns {
+			if strings.Contains(line, pattern) {
+				return false
+			}
+		}
+
+		// Check for user@host:path$ pattern (common shell prompt)
+		if strings.Contains(line, "@") && (strings.HasSuffix(line, "$ ") || strings.HasSuffix(line, "# ") || strings.HasSuffix(line, "% ")) {
+			return false
+		}
+	}
+
+	// If we didn't find explicit indicators either way, assume program is running
+	// This is a conservative default to avoid false restarts
+	return true
+}
+
+// RestartProgram restarts the program in the existing session with optional arguments.
+// This sends the program command to the terminal and executes it.
+func (z *ZellijSession) RestartProgram(args string) error {
+	// Build the command string
+	command := z.program
+	if args != "" {
+		command = command + " " + args
+	}
+
+	// Send the command to the terminal
+	if err := z.SendKeys(command); err != nil {
+		return fmt.Errorf("failed to send program command: %w", err)
+	}
+
+	// Execute the command
+	if err := z.TapEnter(); err != nil {
+		return fmt.Errorf("failed to execute program command: %w", err)
+	}
+
+	log.InfoLog.Printf("Restarted program in session %s: %s", z.sanitizedName, command)
+
+	// Handle trust screen in background
+	go z.handleTrustScreen()
+
+	return nil
+}
+
 // IsAvailable checks if Zellij is available on the system.
 func IsAvailable() bool {
 	cmd := exec.Command("zellij", "--version")

@@ -28,6 +28,9 @@ type InstanceData struct {
 	DiffStats        DiffStatsData   `json:"diff_stats"`
 	Summary          string          `json:"summary,omitempty"`
 	SummaryUpdatedAt time.Time       `json:"summary_updated_at,omitempty"`
+
+	// ClaudeSessionID is the Claude CLI session ID for resuming conversations after restart
+	ClaudeSessionID string `json:"claude_session_id,omitempty"`
 }
 
 // GitWorktreeData represents the serializable data of a GitWorktree
