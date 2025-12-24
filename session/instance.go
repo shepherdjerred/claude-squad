@@ -54,6 +54,11 @@ type Instance struct {
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
 
+	// Summary is a short AI-generated description of the current session state
+	Summary string
+	// SummaryUpdatedAt is when the summary was last updated
+	SummaryUpdatedAt time.Time
+
 	// The below fields are initialized upon calling Start().
 
 	started bool
@@ -68,17 +73,19 @@ type Instance struct {
 // ToInstanceData converts an Instance to its serializable form
 func (i *Instance) ToInstanceData() InstanceData {
 	data := InstanceData{
-		Title:      i.Title,
-		Path:       i.Path,
-		Branch:     i.Branch,
-		Status:     i.Status,
-		Height:     i.Height,
-		Width:      i.Width,
-		CreatedAt:  i.CreatedAt,
-		UpdatedAt:  time.Now(),
-		Program:    i.Program,
-		AutoYes:    i.AutoYes,
-		Multiplexer: string(i.multiplexerType),
+		Title:            i.Title,
+		Path:             i.Path,
+		Branch:           i.Branch,
+		Status:           i.Status,
+		Height:           i.Height,
+		Width:            i.Width,
+		CreatedAt:        i.CreatedAt,
+		UpdatedAt:        time.Now(),
+		Program:          i.Program,
+		AutoYes:          i.AutoYes,
+		Multiplexer:      string(i.multiplexerType),
+		Summary:          i.Summary,
+		SummaryUpdatedAt: i.SummaryUpdatedAt,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -113,16 +120,18 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 	}
 
 	instance := &Instance{
-		Title:           data.Title,
-		Path:            data.Path,
-		Branch:          data.Branch,
-		Status:          data.Status,
-		Height:          data.Height,
-		Width:           data.Width,
-		CreatedAt:       data.CreatedAt,
-		UpdatedAt:       data.UpdatedAt,
-		Program:         data.Program,
-		multiplexerType: mtype,
+		Title:            data.Title,
+		Path:             data.Path,
+		Branch:           data.Branch,
+		Status:           data.Status,
+		Height:           data.Height,
+		Width:            data.Width,
+		CreatedAt:        data.CreatedAt,
+		UpdatedAt:        data.UpdatedAt,
+		Program:          data.Program,
+		Summary:          data.Summary,
+		SummaryUpdatedAt: data.SummaryUpdatedAt,
+		multiplexerType:  mtype,
 		gitWorktree: git.NewGitWorktreeFromStorage(
 			data.Worktree.RepoPath,
 			data.Worktree.WorktreePath,

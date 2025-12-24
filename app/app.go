@@ -97,6 +97,11 @@ type home struct {
 	confirmationOverlay *overlay.ConfirmationOverlay
 	// loadingOverlay displays loading progress
 	loadingOverlay *overlay.LoadingOverlay
+
+	// -- Background Services --
+
+	// summarizer handles generating AI summaries for instances
+	summarizer *session.Summarizer
 }
 
 func newHome(ctx context.Context, program string, autoYes bool) *home {
@@ -125,6 +130,7 @@ func newHome(ctx context.Context, program string, autoYes bool) *home {
 		autoYes:      autoYes,
 		state:        stateDefault,
 		appState:     appState,
+		summarizer:   session.NewSummarizer(),
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
 
@@ -186,6 +192,7 @@ func (m *home) Init() tea.Cmd {
 			return previewTickMsg{}
 		},
 		tickUpdateMetadataCmd,
+		tickUpdateSummaryCmd,
 	)
 }
 
@@ -246,6 +253,13 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, tickUpdateMetadataCmd
+	case tickUpdateSummaryMessage:
+		// Update the next instance's summary (staggered)
+		instances := m.list.GetInstances()
+		if updated := m.summarizer.UpdateNextSummary(instances); updated != nil {
+			log.InfoLog.Printf("Updated summary for %s: %s", updated.Title, updated.Summary)
+		}
+		return m, tickUpdateSummaryCmd
 	case loadingProgressMsg:
 		if m.loadingOverlay != nil {
 			m.loadingOverlay.SetStatus(msg.status)
@@ -786,6 +800,8 @@ type previewTickMsg struct{}
 
 type tickUpdateMetadataMessage struct{}
 
+type tickUpdateSummaryMessage struct{}
+
 type instanceChangedMsg struct{}
 
 // loadingProgressMsg is sent when there's a progress update during loading
@@ -803,6 +819,13 @@ type loadingCompleteMsg struct {
 var tickUpdateMetadataCmd = func() tea.Msg {
 	time.Sleep(500 * time.Millisecond)
 	return tickUpdateMetadataMessage{}
+}
+
+// tickUpdateSummaryCmd is the callback to update instance summaries. This is staggered across instances
+// so we don't overwhelm the system with Claude CLI calls.
+var tickUpdateSummaryCmd = func() tea.Msg {
+	time.Sleep(session.SummaryRefreshInterval)
+	return tickUpdateSummaryMessage{}
 }
 
 // handleError handles all errors which get bubbled up to the app. sets the error message. We return a callback tea.Cmd that returns a hideErrMsg message
