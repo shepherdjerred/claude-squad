@@ -337,7 +337,8 @@ func (z *ZellijSession) Attach() (chan struct{}, error) {
 			select {
 			case <-timeoutCh:
 			default:
-				log.InfoLog.Printf("nuked first stdin: %s", buf[:nr])
+				// Skip logging terminal control sequences to reduce log noise
+			// log.InfoLog.Printf("nuked first stdin: %s", buf[:nr])
 				continue
 			}
 
@@ -609,6 +610,12 @@ func (z *ZellijSession) HasUpdated() (updated bool, hasPrompt bool) {
 		hasPrompt = strings.Contains(content, "(Y)es/(N)o/(D)on't ask again")
 	} else if strings.HasPrefix(z.program, ProgramGemini) {
 		hasPrompt = strings.Contains(content, "Yes, allow once")
+	}
+
+	// If monitor is not initialized, initialize it now
+	if z.monitor == nil {
+		z.monitor = newStatusMonitor()
+		return true, hasPrompt // First check always returns updated
 	}
 
 	newHash := z.monitor.hash(content)

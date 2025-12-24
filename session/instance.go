@@ -591,6 +591,9 @@ func (i *Instance) Paused() bool {
 
 // SessionAlive returns true if the multiplexer session is alive. This is a sanity check before attaching.
 func (i *Instance) SessionAlive() bool {
+	if i.session == nil {
+		return false
+	}
 	return i.session.DoesSessionExist()
 }
 
@@ -678,7 +681,7 @@ func (i *Instance) Resume() error {
 	}
 
 	// Check if session still exists from pause, otherwise create new one
-	if i.session.DoesSessionExist() {
+	if i.session != nil && i.session.DoesSessionExist() {
 		// Session exists, just restore PTY connection to it
 		if err := i.session.Restore(); err != nil {
 			log.ErrorLog.Print(err)

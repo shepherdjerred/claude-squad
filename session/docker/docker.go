@@ -118,6 +118,14 @@ func (d *DockerSession) Start(workDir string) error {
 		return fmt.Errorf("docker container already exists: %s", d.containerName)
 	}
 
+	// Validate the Docker image name before attempting to use it
+	if d.baseImage == "" {
+		return fmt.Errorf("docker image name cannot be empty")
+	}
+	if strings.Contains(d.baseImage, " ") {
+		return fmt.Errorf("docker image name cannot contain spaces: %q", d.baseImage)
+	}
+
 	// Build docker run arguments
 	args := []string{"run", "-d", "--name", d.containerName}
 
@@ -133,12 +141,14 @@ func (d *DockerSession) Start(workDir string) error {
 	// Use sleep infinity as entrypoint so container stays running
 	args = append(args, d.baseImage, "sleep", "infinity")
 
-	log.InfoLog.Printf("Creating Docker container: docker %s", strings.Join(args, " "))
+	dockerCmd := fmt.Sprintf("docker %s", strings.Join(args, " "))
+	log.InfoLog.Printf("Creating Docker container: %s", dockerCmd)
 
 	cmd := exec.Command("docker", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to create docker container: %w, output: %s", err, string(output))
+		log.ErrorLog.Printf("Docker command failed: %s", dockerCmd)
+		return fmt.Errorf("failed to create docker container: %w\nCommand: %s\nOutput: %s", err, dockerCmd, string(output))
 	}
 
 	// For clone mode, clone the repository inside the container
