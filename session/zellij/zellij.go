@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/term"
 )
 
 const (
@@ -216,6 +217,14 @@ func (z *ZellijSession) Attach() (chan struct{}, error) {
 	z.wg = &sync.WaitGroup{}
 	z.wg.Add(1)
 	z.ctx, z.cancel = context.WithCancel(context.Background())
+
+	// Resize the PTY to fullscreen BEFORE starting I/O goroutines.
+	// This prevents content rendered at preview-pane size from being displayed
+	// when we start copying PTY output to stdout.
+	cols, rows, err := term.GetSize(int(os.Stdin.Fd()))
+	if err == nil {
+		_ = z.SetDetachedSize(cols, rows)
+	}
 
 	// Goroutine to copy output from PTY to stdout
 	go func() {

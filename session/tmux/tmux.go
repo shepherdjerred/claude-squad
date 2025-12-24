@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/term"
 )
 
 const ProgramClaude = "claude"
@@ -277,6 +278,14 @@ func (t *TmuxSession) Attach() (chan struct{}, error) {
 	t.wg = &sync.WaitGroup{}
 	t.wg.Add(1)
 	t.ctx, t.cancel = context.WithCancel(context.Background())
+
+	// Resize the PTY to fullscreen BEFORE starting I/O goroutines.
+	// This prevents content rendered at preview-pane size from being displayed
+	// when we start copying PTY output to stdout.
+	cols, rows, err := term.GetSize(int(os.Stdin.Fd()))
+	if err == nil {
+		_ = t.updateWindowSize(cols, rows)
+	}
 
 	// The first goroutine should terminate when the ptmx is closed. We use the
 	// waitgroup to wait for it to finish.
