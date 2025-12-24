@@ -72,11 +72,19 @@ func NewStorage(state config.InstanceStorage) (*Storage, error) {
 
 // SaveInstances saves the list of instances to disk
 func (s *Storage) SaveInstances(instances []*Instance) error {
-	// Convert instances to InstanceData
+	// Convert instances to InstanceData, deduplicating by title
 	data := make([]InstanceData, 0)
+	seenTitles := make(map[string]bool)
 	for _, instance := range instances {
 		if instance.Started() {
-			data = append(data, instance.ToInstanceData())
+			instanceData := instance.ToInstanceData()
+			// Skip duplicates - keep only the first instance with each title
+			if seenTitles[instanceData.Title] {
+				log.WarningLog.Printf("Skipping duplicate instance when saving: %s", instanceData.Title)
+				continue
+			}
+			seenTitles[instanceData.Title] = true
+			data = append(data, instanceData)
 		}
 	}
 

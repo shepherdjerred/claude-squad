@@ -5,6 +5,7 @@ import (
 	"claude-squad/log"
 	"claude-squad/session/git"
 	"claude-squad/session/zellij"
+	"errors"
 	"path/filepath"
 
 	"fmt"
@@ -878,7 +879,10 @@ func (i *Instance) CaptureClaudeSessionID() {
 
 	sessionID, err := ExtractClaudeSessionID(worktreePath)
 	if err != nil {
-		log.WarningLog.Printf("Failed to capture Claude session ID for %s: %v", i.Title, err)
+		// Don't log warnings for expected errors (project not created yet, no session files yet)
+		if !errors.Is(err, ErrClaudeProjectNotFound) && !errors.Is(err, ErrNoSessionFiles) {
+			log.WarningLog.Printf("Failed to capture Claude session ID for %s: %v", i.Title, err)
+		}
 		return
 	}
 
