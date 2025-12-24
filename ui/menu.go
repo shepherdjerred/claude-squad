@@ -122,7 +122,7 @@ func (m *Menu) updateOptions() {
 
 func (m *Menu) addInstanceOptions() {
 	// Instance management group
-	options := []keys.KeyName{keys.KeyNew, keys.KeyKill}
+	options := []keys.KeyName{keys.KeyNew, keys.KeyKill, keys.KeyMoveUp, keys.KeyMoveDown}
 
 	// Action group
 	actionGroup := []keys.KeyName{keys.KeyEnter, keys.KeySubmit}
@@ -161,9 +161,9 @@ func (m *Menu) String() string {
 		start int
 		end   int
 	}{
-		{0, 2}, // Instance management group (n, d)
-		{2, 5}, // Action group (enter, submit, pause/resume)
-		{6, 8}, // System group (tab, help, q)
+		{0, 4}, // Instance management group (n, D, K, J)
+		{4, 7}, // Action group (enter, submit, pause/resume)
+		{8, 10}, // System group (tab, help, q)
 	}
 
 	for i, k := range m.options {

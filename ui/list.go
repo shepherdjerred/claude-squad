@@ -327,6 +327,30 @@ func (l *List) Up() {
 	}
 }
 
+// MoveUp moves the selected instance up in the list (swaps with previous).
+// Returns true if the instance was moved, false otherwise.
+func (l *List) MoveUp() bool {
+	if len(l.items) <= 1 || l.selectedIdx <= 0 {
+		return false
+	}
+	// Swap with previous item
+	l.items[l.selectedIdx], l.items[l.selectedIdx-1] = l.items[l.selectedIdx-1], l.items[l.selectedIdx]
+	l.selectedIdx--
+	return true
+}
+
+// MoveDown moves the selected instance down in the list (swaps with next).
+// Returns true if the instance was moved, false otherwise.
+func (l *List) MoveDown() bool {
+	if len(l.items) <= 1 || l.selectedIdx >= len(l.items)-1 {
+		return false
+	}
+	// Swap with next item
+	l.items[l.selectedIdx], l.items[l.selectedIdx+1] = l.items[l.selectedIdx+1], l.items[l.selectedIdx]
+	l.selectedIdx++
+	return true
+}
+
 func (l *List) addRepo(repo string) {
 	if _, ok := l.repos[repo]; !ok {
 		l.repos[repo] = 0
