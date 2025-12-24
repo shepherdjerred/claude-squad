@@ -55,6 +55,9 @@ type Menu struct {
 
 	// showingArchived indicates if we're viewing archived instances
 	showingArchived bool
+
+	// compactMode is true when the menu should render in a single line
+	compactMode bool
 }
 
 var defaultMenuOptions = []keys.KeyName{keys.KeyNew, keys.KeyPrompt, keys.KeyHelp, keys.KeyQuit}
@@ -166,7 +169,71 @@ func (m *Menu) SetSize(width, height int) {
 	m.height = height
 }
 
+// SetCompact enables or disables compact (single-line) mode for the menu.
+func (m *Menu) SetCompact(compact bool) {
+	m.compactMode = compact
+}
+
+// renderCompact renders a minimal single-line menu for small terminals
+func (m *Menu) renderCompact() string {
+	var s strings.Builder
+
+	// In compact mode, show only essential actions based on state
+	var compactOptions []keys.KeyName
+	switch m.state {
+	case StateEmpty:
+		compactOptions = []keys.KeyName{keys.KeyNew, keys.KeyHelp, keys.KeyQuit}
+	case StateDefault:
+		if m.instance != nil {
+			// Core actions for managing instances
+			compactOptions = []keys.KeyName{keys.KeyEnter, keys.KeyNew, keys.KeyKill, keys.KeyHelp, keys.KeyQuit}
+		} else {
+			compactOptions = []keys.KeyName{keys.KeyNew, keys.KeyHelp, keys.KeyQuit}
+		}
+	case StateNewInstance, StatePrompt, StateRename:
+		compactOptions = []keys.KeyName{keys.KeySubmitName}
+	}
+
+	for i, k := range compactOptions {
+		binding := keys.GlobalkeyBindings[k]
+
+		localKeyStyle := keyStyle
+		localDescStyle := descStyle
+		if m.keyDown == k {
+			localKeyStyle = localKeyStyle.Underline(true)
+			localDescStyle = localDescStyle.Underline(true)
+		}
+
+		// In compact mode, show only key with abbreviated description
+		key := binding.Help().Key
+		desc := binding.Help().Desc
+		// Abbreviate common descriptions
+		switch k {
+		case keys.KeyHelp:
+			desc = "?"
+		case keys.KeyQuit:
+			desc = "quit"
+		}
+
+		s.WriteString(localKeyStyle.Render(key))
+		s.WriteString(" ")
+		s.WriteString(localDescStyle.Render(desc))
+
+		if i != len(compactOptions)-1 {
+			s.WriteString(sepStyle.Render(separator))
+		}
+	}
+
+	centeredMenuText := menuStyle.Render(s.String())
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, centeredMenuText)
+}
+
 func (m *Menu) String() string {
+	// Use compact rendering if enabled
+	if m.compactMode {
+		return m.renderCompact()
+	}
+
 	var s strings.Builder
 
 	// Define group boundaries based on current state
