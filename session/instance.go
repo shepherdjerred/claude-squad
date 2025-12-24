@@ -46,6 +46,8 @@ type Instance struct {
 	CreatedAt time.Time
 	// UpdatedAt is the time the instance was last updated.
 	UpdatedAt time.Time
+	// LastOpenedAt is the time the user last attached to this instance.
+	LastOpenedAt *time.Time
 	// AutoYes is true if the instance should automatically press enter when prompted.
 	AutoYes bool
 	// Prompt is the initial prompt to pass to the instance on startup
@@ -68,17 +70,18 @@ type Instance struct {
 // ToInstanceData converts an Instance to its serializable form
 func (i *Instance) ToInstanceData() InstanceData {
 	data := InstanceData{
-		Title:      i.Title,
-		Path:       i.Path,
-		Branch:     i.Branch,
-		Status:     i.Status,
-		Height:     i.Height,
-		Width:      i.Width,
-		CreatedAt:  i.CreatedAt,
-		UpdatedAt:  time.Now(),
-		Program:    i.Program,
-		AutoYes:    i.AutoYes,
-		Multiplexer: string(i.multiplexerType),
+		Title:        i.Title,
+		Path:         i.Path,
+		Branch:       i.Branch,
+		Status:       i.Status,
+		Height:       i.Height,
+		Width:        i.Width,
+		CreatedAt:    i.CreatedAt,
+		UpdatedAt:    time.Now(),
+		LastOpenedAt: i.LastOpenedAt,
+		Program:      i.Program,
+		AutoYes:      i.AutoYes,
+		Multiplexer:  string(i.multiplexerType),
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -121,6 +124,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		Width:           data.Width,
 		CreatedAt:       data.CreatedAt,
 		UpdatedAt:       data.UpdatedAt,
+		LastOpenedAt:    data.LastOpenedAt,
 		Program:         data.Program,
 		multiplexerType: mtype,
 		gitWorktree: git.NewGitWorktreeFromStorage(
@@ -365,6 +369,9 @@ func (i *Instance) Attach() (chan struct{}, error) {
 	if !i.started {
 		return nil, fmt.Errorf("cannot attach instance that has not been started")
 	}
+	// Track when the user last opened this instance
+	now := time.Now()
+	i.LastOpenedAt = &now
 	return i.session.Attach()
 }
 
