@@ -68,6 +68,10 @@ type Instance struct {
 	lastDiffUpdate time.Time // When diff was last calculated
 	lastActivity   time.Time // When instance status last changed
 
+	// ClaudeSessionID is the Claude CLI session ID for resuming conversations after restart.
+	// This is captured from Claude's project files after Claude starts.
+	ClaudeSessionID string
+
 	// The below fields are initialized upon calling Start().
 
 	started bool
@@ -97,6 +101,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		Multiplexer:      string(i.multiplexerType),
 		Summary:          i.Summary,
 		SummaryUpdatedAt: i.SummaryUpdatedAt,
+		ClaudeSessionID:  i.ClaudeSessionID,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -202,6 +207,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		Archived:         data.Archived,
 		Summary:          data.Summary,
 		SummaryUpdatedAt: data.SummaryUpdatedAt,
+		ClaudeSessionID:  data.ClaudeSessionID,
 		multiplexerType:  mtype,
 		gitWorktree: git.NewGitWorktreeFromStorage(
 			data.Worktree.RepoPath,
@@ -726,4 +732,73 @@ func (i *Instance) SendKeys(keys string) error {
 // GetMultiplexerType returns the type of multiplexer used for this instance
 func (i *Instance) GetMultiplexerType() MultiplexerType {
 	return i.multiplexerType
+}
+
+// CheckAndRestartProgram checks if the program needs to be restarted and does so if possible.
+// This is used to handle system restarts where the Zellij session survives but the program
+// (e.g., Claude) has exited. If a Claude session ID is available, it will restart with --resume.
+func (i *Instance) CheckAndRestartProgram() error {
+	if !i.started || i.Status == Paused {
+		return nil
+	}
+
+	// Check if program is running
+	running, err := i.session.IsProgramRunning()
+	if err != nil {
+		return fmt.Errorf("failed to check if program is running: %w", err)
+	}
+
+	if running {
+		return nil // Program is running, nothing to do
+	}
+
+	// Program is not running, try to restart it
+	log.InfoLog.Printf("Program not running in instance %s, attempting restart", i.Title)
+
+	// For Claude, use --resume with session ID if available
+	args := ""
+	if strings.Contains(i.Program, "claude") && i.ClaudeSessionID != "" {
+		args = "--resume " + i.ClaudeSessionID
+		log.InfoLog.Printf("Restarting Claude with session ID: %s", i.ClaudeSessionID)
+	}
+
+	if err := i.session.RestartProgram(args); err != nil {
+		return fmt.Errorf("failed to restart program: %w", err)
+	}
+
+	return nil
+}
+
+// CaptureClaudeSessionID captures and stores the Claude session ID from Claude's project files.
+// This should be called after Claude has started and had time to create its session files.
+// The session ID is used to resume the conversation after a system restart.
+func (i *Instance) CaptureClaudeSessionID() {
+	if !strings.Contains(i.Program, "claude") {
+		return
+	}
+
+	// Get the worktree path for Claude's project directory
+	worktreePath := ""
+	if i.gitWorktree != nil {
+		worktreePath = i.gitWorktree.GetWorktreePath()
+	}
+	if worktreePath == "" {
+		worktreePath = i.Path
+	}
+
+	sessionID, err := ExtractClaudeSessionID(worktreePath)
+	if err != nil {
+		log.WarningLog.Printf("Failed to capture Claude session ID for %s: %v", i.Title, err)
+		return
+	}
+
+	if sessionID != "" && sessionID != i.ClaudeSessionID {
+		i.ClaudeSessionID = sessionID
+		log.InfoLog.Printf("Captured Claude session ID for %s: %s", i.Title, sessionID)
+	}
+}
+
+// GetClaudeSessionID returns the stored Claude session ID.
+func (i *Instance) GetClaudeSessionID() string {
+	return i.ClaudeSessionID
 }

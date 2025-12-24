@@ -54,6 +54,8 @@ func RunDaemon(cfg *config.Config) error {
 			// Background diff stats update - non-blocking, rate-limited
 			// (10s delay after activity, max once per 30s per instance)
 			session.BackgroundUpdateDiffStats(instances)
+			// Background capture of Claude session IDs for instances that don't have one
+			session.BackgroundCaptureClaudeSessionIDs(instances)
 
 			// Handle stop before ticker.
 			select {

@@ -52,4 +52,14 @@ type Multiplexer interface {
 
 	// GetProgram returns the program being run in this session.
 	GetProgram() string
+
+	// IsProgramRunning checks if the configured program is actively running in the session.
+	// Returns true if the program appears to be running, false if we see a shell prompt
+	// or other indicators that the program has exited.
+	// This is used to detect when the program needs to be restarted after system reboot.
+	IsProgramRunning() (bool, error)
+
+	// RestartProgram restarts the program in the existing session with optional arguments.
+	// This sends the program command followed by the args to the terminal and executes it.
+	RestartProgram(args string) error
 }
