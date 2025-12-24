@@ -40,6 +40,9 @@ type InstanceData struct {
 
 	// DockerRepoURL is the git repo URL for docker-clone mode
 	DockerRepoURL string `json:"docker_repo_url,omitempty"`
+
+	// RandomSuffix is the random word pair suffix for this instance
+	RandomSuffix string `json:"random_suffix,omitempty"`
 }
 
 // GitWorktreeData represents the serializable data of a GitWorktree

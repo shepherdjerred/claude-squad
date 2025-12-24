@@ -4,6 +4,7 @@ import (
 	"claude-squad/config"
 	"claude-squad/log"
 	"claude-squad/session/git"
+	"claude-squad/session/wordgen"
 	"claude-squad/session/zellij"
 	"errors"
 	"path/filepath"
@@ -82,6 +83,8 @@ type Instance struct {
 	DockerRepoURL string
 	// DockerBaseImage is the Docker base image used for this session
 	DockerBaseImage string
+	// RandomSuffix is the random word pair suffix for this instance
+	RandomSuffix string
 
 	// The below fields are initialized upon calling Start().
 
@@ -117,6 +120,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		SessionType:       i.SessionType,
 		DockerContainerID: i.DockerContainerID,
 		DockerRepoURL:     i.DockerRepoURL,
+		RandomSuffix:      i.RandomSuffix,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -231,6 +235,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		SessionType:       sessionType,
 		DockerContainerID: data.DockerContainerID,
 		DockerRepoURL:     data.DockerRepoURL,
+		RandomSuffix:      data.RandomSuffix,
 		multiplexerType:   mtype,
 		diffStats: &git.DiffStats{
 			Added:   data.DiffStats.Added,
@@ -301,6 +306,12 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
+	// Generate random suffix for this instance
+	randomSuffix := wordgen.Generate()
+	if randomSuffix == "" {
+		log.ErrorLog.Printf("failed to generate random suffix, continuing without suffix")
+	}
+
 	// Default to zellij if no session type specified
 	sessionType := opts.SessionType
 	if sessionType == "" {
@@ -312,6 +323,7 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 
 	return &Instance{
 		Title:           opts.Title,
+		RandomSuffix:    randomSuffix,
 		Status:          Ready,
 		Path:            absPath,
 		Program:         opts.Program,
@@ -332,6 +344,15 @@ func (i *Instance) RepoName() (string, error) {
 		return "", fmt.Errorf("cannot get repo name for instance that has not been started")
 	}
 	return i.gitWorktree.GetRepoName(), nil
+}
+
+// GetSessionName returns the session name with random suffix.
+// This is the immutable identifier used for git branches and multiplexer sessions.
+func (i *Instance) GetSessionName() string {
+	if i.RandomSuffix == "" {
+		return i.Title // Backward compatibility
+	}
+	return fmt.Sprintf("%s_%s", i.Title, i.RandomSuffix)
 }
 
 func (i *Instance) SetStatus(status Status) {
@@ -368,7 +389,7 @@ func (i *Instance) startInternal(firstTimeSetup bool, progressCallback git.Progr
 
 	if firstTimeSetup && !isDockerClone {
 		// Create git worktree for Zellij and Docker bind-mount modes
-		gitWorktree, branchName, err := git.NewGitWorktree(i.Path, i.Title)
+		gitWorktree, branchName, err := git.NewGitWorktree(i.Path, i.GetSessionName())
 		if err != nil {
 			return fmt.Errorf("failed to create git worktree: %w", err)
 		}
@@ -381,7 +402,7 @@ func (i *Instance) startInternal(firstTimeSetup bool, progressCallback git.Progr
 	} else if firstTimeSetup && isDockerClone {
 		// For Docker clone mode, just set up the branch name
 		// The repo will be cloned inside the container
-		i.Branch = i.Title // Branch name will be the instance title
+		i.Branch = i.GetSessionName() // Branch name includes random suffix
 	}
 
 	// Create the multiplexer session
@@ -390,9 +411,10 @@ func (i *Instance) startInternal(firstTimeSetup bool, progressCallback git.Progr
 		// Use existing session (useful for testing)
 		session = i.session
 	} else {
-		// Determine session name
-		sessionName := i.Title
+		// Determine session name (includes random suffix)
+		sessionName := i.GetSessionName()
 		if i.gitWorktree != nil {
+			// Use gitWorktree's session name for consistency
 			sessionName = i.gitWorktree.GetSessionName()
 		}
 
