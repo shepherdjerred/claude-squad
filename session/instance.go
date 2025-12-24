@@ -57,7 +57,7 @@ type Instance struct {
 	// The below fields are initialized upon calling Start().
 
 	started bool
-	// session is the multiplexer session for the instance (tmux or zellij).
+	// session is the multiplexer session for the instance.
 	session Multiplexer
 	// multiplexerType is the type of multiplexer used for this instance.
 	multiplexerType MultiplexerType
@@ -106,11 +106,8 @@ func (i *Instance) ToInstanceData() InstanceData {
 
 // FromInstanceData creates a new Instance from serialized data
 func FromInstanceData(data InstanceData) (*Instance, error) {
-	// Parse multiplexer type, defaulting to tmux for backwards compatibility
-	mtype := MultiplexerType(data.Multiplexer)
-	if mtype == "" {
-		mtype = MultiplexerTmux
-	}
+	// Always use zellij (stored multiplexer type is ignored for backwards compatibility)
+	mtype := MultiplexerZellij
 
 	instance := &Instance{
 		Title:           data.Title,
@@ -159,8 +156,8 @@ type InstanceOptions struct {
 	Program string
 	// If AutoYes is true, then
 	AutoYes bool
-	// Multiplexer is the terminal multiplexer to use ("tmux" or "zellij").
-	// If empty, uses the default for the platform.
+	// Multiplexer is deprecated and ignored. Zellij is always used.
+	// This field is kept for backwards compatibility.
 	Multiplexer string
 }
 
@@ -173,11 +170,8 @@ func NewInstance(opts InstanceOptions) (*Instance, error) {
 		return nil, fmt.Errorf("failed to get absolute path: %w", err)
 	}
 
-	// Determine multiplexer type from options or use platform default
-	muxType := MultiplexerType(opts.Multiplexer)
-	if muxType == "" {
-		muxType = DefaultMultiplexer()
-	}
+	// Always use zellij (options.Multiplexer is ignored for backwards compatibility)
+	muxType := MultiplexerZellij
 
 	return &Instance{
 		Title:           opts.Title,
@@ -220,9 +214,9 @@ func (i *Instance) startInternal(firstTimeSetup bool, progressCallback git.Progr
 		return fmt.Errorf("instance title cannot be empty")
 	}
 
-	// Use default multiplexer if not set
+	// Always use zellij
 	if i.multiplexerType == "" {
-		i.multiplexerType = DefaultMultiplexer()
+		i.multiplexerType = MultiplexerZellij
 	}
 
 	var session Multiplexer
@@ -586,6 +580,13 @@ func (i *Instance) PreviewFullHistory() (string, error) {
 // SetSession sets the multiplexer session for testing purposes
 func (i *Instance) SetSession(session Multiplexer) {
 	i.session = session
+}
+
+// MarkAsStartedForTesting marks the instance as started for testing purposes.
+// This allows tests to bypass the real session startup while still testing
+// preview functionality.
+func (i *Instance) MarkAsStartedForTesting() {
+	i.started = true
 }
 
 // SendKeys sends keys to the session

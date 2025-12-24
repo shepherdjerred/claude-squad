@@ -4,14 +4,13 @@ import (
 	"claude-squad/cmd/cmd_test"
 	"claude-squad/log"
 	"claude-squad/session"
-	"claude-squad/session/tmux"
+	"claude-squad/session/zellij"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +24,9 @@ type testSetup struct {
 }
 
 // setupTestEnvironment creates a common test environment with git repo and instance
-func setupTestEnvironment(t *testing.T, cmdExec cmd_test.MockCmdExec) *testSetup {
+// Note: This does not call Start() because that would require real zellij commands.
+// The mock session is set up to handle preview operations directly.
+func setupTestEnvironment(t *testing.T, cmdExec cmd_test.MockCmdExec, sessionName string) *testSetup {
 	t.Helper()
 
 	// Initialize logging
@@ -37,14 +38,6 @@ func setupTestEnvironment(t *testing.T, cmdExec cmd_test.MockCmdExec) *testSetup
 	// Initialize git repository
 	setupGitRepo(t, workdir)
 
-	// Create unique session name
-	random := time.Now().UnixNano() % 10000000
-	sessionName := fmt.Sprintf("test-preview-%s-%d-%d", t.Name(), time.Now().UnixNano(), random)
-
-	// Clean up any existing tmux session
-	cleanupCmd := exec.Command("tmux", "kill-session", "-t", "claudesquad_"+sessionName)
-	_ = cleanupCmd.Run() // Ignore errors if session doesn't exist
-
 	// Create instance
 	instance, err := session.NewInstance(session.InstanceOptions{
 		Title:   sessionName,
@@ -54,25 +47,17 @@ func setupTestEnvironment(t *testing.T, cmdExec cmd_test.MockCmdExec) *testSetup
 	})
 	require.NoError(t, err)
 
-	// Create MockPtyFactory
-	ptyFactory := &MockPtyFactory{
-		t:       t,
-		cmdExec: cmdExec,
-	}
+	// Set up zellij session with mocks
+	zellijSession := zellij.NewZellijSessionWithDeps(sessionName, "bash", cmdExec)
+	instance.SetSession(zellijSession)
 
-	// Set up tmux session with mocks
-	tmuxSession := tmux.NewTmuxSessionWithDeps(sessionName, "bash", ptyFactory, cmdExec)
-	instance.SetSession(tmuxSession)
-
-	// Start the tmux session
-	err = instance.Start(true)
-	require.NoError(t, err)
+	// Note: We don't call instance.Start() because that requires real zellij.
+	// The preview tests only need the mock session to be set up.
+	// Mark instance as started by setting its internal state.
+	instance.MarkAsStartedForTesting()
 
 	// Create cleanup function
 	cleanupFn := func() {
-		if instance != nil {
-			_ = instance.Kill() // Ignore errors during cleanup
-		}
 		log.Close()
 	}
 
@@ -123,9 +108,11 @@ func setupGitRepo(t *testing.T, workdir string) {
 
 // TestPreviewScrolling tests the scrolling functionality in the preview pane
 func TestPreviewScrolling(t *testing.T) {
+	// Define session name upfront so mock can return correct value
+	sessionName := "test-preview-scroll"
+
 	// Track what commands were executed and their order
 	var executedCommands []string
-	inCopyMode := false
 	scrollPosition := 0 // 0 = bottom, positive = scrolled up
 	sessionCreated := false
 
@@ -144,8 +131,8 @@ func TestPreviewScrolling(t *testing.T) {
 			cmdStr := cmd.String()
 			executedCommands = append(executedCommands, cmdStr)
 
-			// Handle tmux session creation and existence checking
-			if strings.Contains(cmdStr, "has-session") {
+			// Handle zellij session existence checking
+			if strings.Contains(cmdStr, "zellij") && strings.Contains(cmdStr, "list-sessions") {
 				if sessionCreated {
 					return nil // Session exists
 				} else {
@@ -153,34 +140,40 @@ func TestPreviewScrolling(t *testing.T) {
 				}
 			}
 
-			// Handle session creation
-			if strings.Contains(cmdStr, "new-session") {
+			// Handle session creation (zellij attach with layout)
+			if strings.Contains(cmdStr, "zellij") && strings.Contains(cmdStr, "attach") {
 				sessionCreated = true
 				return nil
 			}
 
-			// Handle attach-session
-			if strings.Contains(cmdStr, "attach-session") {
-				return nil
+			// Handle scroll commands
+			if strings.Contains(cmdStr, "scroll-up") {
+				scrollPosition++
 			}
-
-			// Handle copy mode commands
-			if strings.Contains(cmdStr, "copy-mode") {
-				inCopyMode = true
-			}
-			if strings.Contains(cmdStr, "send-keys") && strings.Contains(cmdStr, "q") {
-				inCopyMode = false
-				scrollPosition = 0 // Reset position when exiting copy mode
-			}
-			if strings.Contains(cmdStr, "send-keys") && strings.Contains(cmdStr, "Up") {
-				if inCopyMode {
-					scrollPosition++
-				}
-			}
-			if strings.Contains(cmdStr, "send-keys") && strings.Contains(cmdStr, "Down") {
-				if inCopyMode && scrollPosition > 0 {
+			if strings.Contains(cmdStr, "scroll-down") {
+				if scrollPosition > 0 {
 					scrollPosition--
 				}
+			}
+
+			// Handle dump-screen commands - write content to the temp file
+			if strings.Contains(cmdStr, "dump-screen") {
+				// Get the file path (last argument)
+				args := cmd.Args
+				if len(args) > 0 {
+					tmpFile := args[len(args)-1]
+					// Check if this is a full history capture
+					if strings.Contains(cmdStr, "--full") {
+						os.WriteFile(tmpFile, []byte(fullContent), 0644)
+					} else {
+						// Regular capture for normal preview mode - show the last 20 lines
+						const visibleLines = 20
+						startLine := max(0, numLines+1-visibleLines)
+						visibleContent := strings.Join(lines[startLine:], "\n")
+						os.WriteFile(tmpFile, []byte(visibleContent), 0644)
+					}
+				}
+				return nil
 			}
 
 			return nil
@@ -188,26 +181,12 @@ func TestPreviewScrolling(t *testing.T) {
 		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
 			cmdStr := cmd.String()
 
-			// Handle capture-pane commands
-			if strings.Contains(cmdStr, "capture-pane") {
-				// Check if this is a request for cursor position
-				if strings.Contains(cmdStr, "display-message") && strings.Contains(cmdStr, "copy_cursor_y") {
-					var buf []byte
-					buf = fmt.Appendf(buf, "%d", scrollPosition)
-					return buf, nil
+			// Handle list-sessions for session check - return the correct session name
+			if strings.Contains(cmdStr, "list-sessions") {
+				if sessionCreated {
+					return []byte("claudesquad_" + sessionName), nil
 				}
-
-				// Check if this is a copy mode capture with full history (-S -)
-				if strings.Contains(cmdStr, "-S -") {
-					// Always return the full content for PreviewFullHistory
-					return []byte(fullContent), nil
-				}
-
-				// Regular capture for normal preview mode - show the last 20 lines
-				const visibleLines = 20
-				startLine := max(0, numLines+1-visibleLines)
-				visibleContent := strings.Join(lines[startLine:], "\n")
-				return []byte(visibleContent), nil
+				return []byte(""), fmt.Errorf("no sessions")
 			}
 
 			return []byte(""), nil
@@ -215,7 +194,7 @@ func TestPreviewScrolling(t *testing.T) {
 	}
 
 	// Setup test environment
-	setup := setupTestEnvironment(t, cmdExec)
+	setup := setupTestEnvironment(t, cmdExec, sessionName)
 	defer setup.cleanupFn()
 
 	// Simulate running a command that produces lots of output
@@ -285,34 +264,12 @@ func TestPreviewScrolling(t *testing.T) {
 	require.False(t, previewPane.isScrolling, "Should not be in scrolling mode after reset")
 }
 
-// MockPtyFactory for testing tmux sessions
-type MockPtyFactory struct {
-	t       *testing.T
-	cmdExec cmd_test.MockCmdExec
-
-	// Array of commands and the corresponding file handles representing PTYs.
-	cmds  []*exec.Cmd
-	files []*os.File
-}
-
-func (pt *MockPtyFactory) Start(cmd *exec.Cmd) (*os.File, error) {
-	filePath := filepath.Join(pt.t.TempDir(), fmt.Sprintf("pty-%s-%d", pt.t.Name(), len(pt.cmds)))
-	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_RDWR, 0644)
-	if err == nil {
-		pt.cmds = append(pt.cmds, cmd)
-		pt.files = append(pt.files, f)
-
-		// Execute the command through our mock to trigger session creation logic
-		_ = pt.cmdExec.Run(cmd)
-	}
-	return f, err
-}
-
-func (pt *MockPtyFactory) Close() {}
-
 // TestPreviewContentWithoutScrolling tests that the preview pane correctly displays content
 // for a new instance without requiring scrolling
 func TestPreviewContentWithoutScrolling(t *testing.T) {
+	// Define session name upfront so mock can return correct value
+	sessionName := "test-preview-content"
+
 	// Create test content
 	expectedContent := "$ echo test\ntest"
 
@@ -324,8 +281,8 @@ func TestPreviewContentWithoutScrolling(t *testing.T) {
 		RunFunc: func(cmd *exec.Cmd) error {
 			cmdStr := cmd.String()
 
-			// Handle tmux session creation and existence checking
-			if strings.Contains(cmdStr, "has-session") {
+			// Handle zellij session existence checking
+			if strings.Contains(cmdStr, "list-sessions") {
 				if sessionCreated {
 					return nil // Session exists
 				} else {
@@ -334,8 +291,19 @@ func TestPreviewContentWithoutScrolling(t *testing.T) {
 			}
 
 			// Handle session creation
-			if strings.Contains(cmdStr, "new-session") {
+			if strings.Contains(cmdStr, "zellij") && strings.Contains(cmdStr, "attach") {
 				sessionCreated = true
+				return nil
+			}
+
+			// Handle dump-screen commands - write content to the temp file
+			if strings.Contains(cmdStr, "dump-screen") {
+				// Get the file path (last argument)
+				args := cmd.Args
+				if len(args) > 0 {
+					tmpFile := args[len(args)-1]
+					os.WriteFile(tmpFile, []byte(expectedContent), 0644)
+				}
 				return nil
 			}
 
@@ -344,10 +312,12 @@ func TestPreviewContentWithoutScrolling(t *testing.T) {
 		OutputFunc: func(cmd *exec.Cmd) ([]byte, error) {
 			cmdStr := cmd.String()
 
-			// Handle capture-pane commands for normal preview
-			if strings.Contains(cmdStr, "capture-pane") {
-				// Return our test content for normal preview
-				return []byte(expectedContent), nil
+			// Handle list-sessions for session check - return the correct session name
+			if strings.Contains(cmdStr, "list-sessions") {
+				if sessionCreated {
+					return []byte("claudesquad_" + sessionName), nil
+				}
+				return []byte(""), fmt.Errorf("no sessions")
 			}
 
 			return []byte(""), nil
@@ -355,7 +325,7 @@ func TestPreviewContentWithoutScrolling(t *testing.T) {
 	}
 
 	// Setup test environment
-	setup := setupTestEnvironment(t, cmdExec)
+	setup := setupTestEnvironment(t, cmdExec, sessionName)
 	defer setup.cleanupFn()
 
 	// Create the preview pane

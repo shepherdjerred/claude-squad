@@ -84,7 +84,7 @@ func (l *List) SetSize(width, height int) {
 	l.renderer.setWidth(width)
 }
 
-// SetSessionPreviewSize sets the height and width for the tmux sessions. This makes the stdout line have the correct
+// SetSessionPreviewSize sets the height and width for the multiplexer sessions. This makes the stdout line have the correct
 // width and height.
 func (l *List) SetSessionPreviewSize(width, height int) (err error) {
 	for i, item := range l.items {
@@ -290,7 +290,7 @@ func (l *List) Kill() {
 	}
 	targetInstance := l.items[l.selectedIdx]
 
-	// Kill the tmux session
+	// Kill the multiplexer session
 	if err := targetInstance.Kill(); err != nil {
 		log.ErrorLog.Printf("could not kill instance: %v", err)
 	}

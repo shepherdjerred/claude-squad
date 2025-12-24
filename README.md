@@ -46,8 +46,10 @@ curl -fsSL https://raw.githubusercontent.com/smtg-ai/claude-squad/main/install.s
 
 ### Prerequisites
 
-- [tmux](https://github.com/tmux/tmux/wiki/Installing)
+- [zellij](https://zellij.dev/documentation/installation) (terminal multiplexer)
 - [gh](https://cli.github.com/)
+
+**Note:** Windows is not supported. Please use WSL (Windows Subsystem for Linux) instead.
 
 ### Usage
 
@@ -114,12 +116,12 @@ The menu at the bottom of the screen shows available commands:
 
 #### Failed to start new session
 
-If you get an error like `failed to start new session: timed out waiting for tmux session`, update the
+If you get an error like `failed to start new session: timed out waiting for zellij session`, update the
 underlying program (ex. `claude`) to the latest version.
 
 ### How It Works
 
-1. **tmux** to create isolated terminal sessions for each agent
+1. **zellij** to create isolated terminal sessions for each agent
 2. **git worktrees** to isolate codebases so each session works on its own branch
 3. A simple TUI interface for easy navigation and management
 
