@@ -75,8 +75,8 @@ type home struct {
 	// promptAfterName tracks if we should enter prompt mode after naming
 	promptAfterName bool
 
-	// keySent is used to manage underlining menu items
-	keySent bool
+	// pendingSave indicates that a save is queued (for debouncing)
+	pendingSave bool
 
 	// -- UI Components --
 
@@ -206,12 +206,21 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(
 			cmd,
 			func() tea.Msg {
-				time.Sleep(100 * time.Millisecond)
+				time.Sleep(250 * time.Millisecond)
 				return previewTickMsg{}
 			},
 		)
 	case keyupMsg:
 		m.menu.ClearKeydown()
+		return m, nil
+	case saveDebounceMsg:
+		m.pendingSave = false
+		// Perform the save asynchronously to avoid blocking the UI
+		go func() {
+			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+				log.ErrorLog.Printf("failed to save instances: %v", err)
+			}
+		}()
 		return m, nil
 	case tickUpdateMetadataMessage:
 		// Check if state file was modified by another process and sync if needed
@@ -343,45 +352,35 @@ func (m *home) handleQuit() (tea.Model, tea.Cmd) {
 	return m, tea.Quit
 }
 
-func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly bool) {
-	// Handle menu highlighting when you press a button. We intercept it here and immediately return to
-	// update the ui while re-sending the keypress. Then, on the next call to this, we actually handle the keypress.
-	if m.keySent {
-		m.keySent = false
-		return nil, false
-	}
+// handleMenuHighlighting returns a command to highlight the pressed key in the menu.
+// This is purely visual - it briefly underlines the corresponding menu item.
+func (m *home) handleMenuHighlighting(msg tea.KeyMsg) tea.Cmd {
 	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm {
-		return nil, false
+		return nil
 	}
 	// If it's in the global keymap, we should try to highlight it.
 	name, ok := keys.GlobalKeyStringsMap[msg.String()]
 	if !ok {
-		return nil, false
+		return nil
 	}
 
 	if m.list.GetSelectedInstance() != nil && m.list.GetSelectedInstance().Paused() && name == keys.KeyEnter {
-		return nil, false
+		return nil
 	}
 	if name == keys.KeyShiftDown || name == keys.KeyShiftUp {
-		return nil, false
+		return nil
 	}
 
-	// Skip the menu highlighting if the key is not in the map or we are using the shift up and down keys.
 	// TODO: cleanup: when you press enter on stateNew, we use keys.KeySubmitName. We should unify the keymap.
 	if name == keys.KeyEnter && m.state == stateNew {
 		name = keys.KeySubmitName
 	}
-	m.keySent = true
-	return tea.Batch(
-		func() tea.Msg { return msg },
-		m.keydownCallback(name)), true
+	return m.keydownCallback(name)
 }
 
 func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
-	cmd, returnEarly := m.handleMenuHighlighting(msg)
-	if returnEarly {
-		return m, cmd
-	}
+	// Get the menu highlight command - this is batched with the action command later
+	highlightCmd := m.handleMenuHighlighting(msg)
 
 	if m.state == stateHelp {
 		return m.handleHelpState(msg)
@@ -614,36 +613,32 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, nil
 	case keys.KeyUp:
 		m.list.Up()
-		return m, m.instanceChanged()
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
 	case keys.KeyDown:
 		m.list.Down()
-		return m, m.instanceChanged()
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
 	case keys.KeyShiftUp:
 		m.tabbedWindow.ScrollUp()
-		return m, m.instanceChanged()
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
 	case keys.KeyShiftDown:
 		m.tabbedWindow.ScrollDown()
-		return m, m.instanceChanged()
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
 	case keys.KeyMoveUp:
 		if m.list.MoveUp() {
-			// Save instances after reordering
-			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
-				return m, m.handleError(err)
-			}
+			// Schedule debounced save to avoid blocking on rapid key presses
+			return m, tea.Batch(highlightCmd, m.instanceChanged(), m.requestSave())
 		}
-		return m, m.instanceChanged()
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
 	case keys.KeyMoveDown:
 		if m.list.MoveDown() {
-			// Save instances after reordering
-			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
-				return m, m.handleError(err)
-			}
+			// Schedule debounced save to avoid blocking on rapid key presses
+			return m, tea.Batch(highlightCmd, m.instanceChanged(), m.requestSave())
 		}
-		return m, m.instanceChanged()
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
 	case keys.KeyToggleArchive:
 		m.list.ToggleArchiveView()
 		m.menu.SetShowingArchived(m.list.ShowingArchived())
-		return m, m.instanceChanged()
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
 	case keys.KeyArchive:
 		selected := m.list.GetSelectedInstance()
 		if selected == nil {
@@ -685,7 +680,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	case keys.KeyTab:
 		m.tabbedWindow.Toggle()
 		m.menu.SetInDiffTab(m.tabbedWindow.IsInDiffTab())
-		return m, m.instanceChanged()
+		return m, tea.Batch(highlightCmd, m.instanceChanged())
 	case keys.KeyKill:
 		selected := m.list.GetSelectedInstance()
 		if selected == nil {
@@ -849,6 +844,12 @@ type tickUpdateSummaryMessage struct{}
 
 type instanceChangedMsg struct{}
 
+// saveDebounceMsg is sent after a debounce delay to trigger a save
+type saveDebounceMsg struct{}
+
+// saveDebounceDelay is how long to wait before saving after a reorder operation
+const saveDebounceDelay = 500 * time.Millisecond
+
 // loadingProgressMsg is sent when there's a progress update during loading
 type loadingProgressMsg struct {
 	status string
@@ -859,10 +860,10 @@ type loadingCompleteMsg struct {
 	err error
 }
 
-// tickUpdateMetadataCmd is the callback to update the metadata of the instances every 500ms. Note that we iterate
-// overall the instances and capture their output. It's a pretty expensive operation. Let's do it 2x a second only.
+// tickUpdateMetadataCmd is the callback to update the metadata of the instances every 2 seconds.
+// Note that we iterate over all instances and capture their output. It's an expensive operation.
 var tickUpdateMetadataCmd = func() tea.Msg {
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(2 * time.Second)
 	return tickUpdateMetadataMessage{}
 }
 
@@ -885,6 +886,19 @@ func (m *home) handleError(err error) tea.Cmd {
 		}
 
 		return hideErrMsg{}
+	}
+}
+
+// requestSave schedules a debounced save operation.
+// If a save is already pending, this does nothing (the pending save will include all changes).
+func (m *home) requestSave() tea.Cmd {
+	if m.pendingSave {
+		return nil // Already have a pending save
+	}
+	m.pendingSave = true
+	return func() tea.Msg {
+		time.Sleep(saveDebounceDelay)
+		return saveDebounceMsg{}
 	}
 }
 
