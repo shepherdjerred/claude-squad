@@ -18,7 +18,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const GlobalInstanceLimit = 10
+const GlobalInstanceLimit = 50
 
 // Run is the main entrypoint into the application.
 func Run(ctx context.Context, program string, autoYes bool) error {
