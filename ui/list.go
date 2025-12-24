@@ -313,13 +313,15 @@ func (l *List) String() string {
 	return lipgloss.Place(l.width, l.height, lipgloss.Left, lipgloss.Top, b.String())
 }
 
-// Down selects the next item in the list.
+// Down selects the next item in the list. Wraps to the first item if at the end.
 func (l *List) Down() {
 	if len(l.items) == 0 {
 		return
 	}
 	if l.selectedIdx < len(l.items)-1 {
 		l.selectedIdx++
+	} else {
+		l.selectedIdx = 0
 	}
 }
 
@@ -359,13 +361,15 @@ func (l *List) Attach() (chan struct{}, error) {
 	return targetInstance.Attach()
 }
 
-// Up selects the prev item in the list.
+// Up selects the prev item in the list. Wraps to the last item if at the beginning.
 func (l *List) Up() {
 	if len(l.items) == 0 {
 		return
 	}
 	if l.selectedIdx > 0 {
 		l.selectedIdx--
+	} else {
+		l.selectedIdx = len(l.items) - 1
 	}
 }
 
