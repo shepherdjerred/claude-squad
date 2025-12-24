@@ -678,8 +678,11 @@ func (z *ZellijSession) IsProgramRunning() (bool, error) {
 
 // detectProgramRunning analyzes terminal content to determine if a program is running.
 func detectProgramRunning(content, program string) bool {
+	contentLen := len(strings.TrimSpace(content))
+
 	// If content is empty or very short, assume program is not running
-	if len(strings.TrimSpace(content)) < 10 {
+	if contentLen < 10 {
+		log.DebugLog.Printf("[detectProgramRunning] Content too short (%d chars), assuming not running", contentLen)
 		return false
 	}
 
@@ -695,6 +698,7 @@ func detectProgramRunning(content, program string) bool {
 
 	for _, indicator := range programRunningIndicators {
 		if strings.Contains(content, indicator) {
+			log.DebugLog.Printf("[detectProgramRunning] Found program indicator '%s', program is running", indicator)
 			return true
 		}
 	}
@@ -726,18 +730,21 @@ func detectProgramRunning(content, program string) bool {
 		// Check for explicit shell prompts
 		for _, pattern := range shellPromptPatterns {
 			if strings.Contains(line, pattern) {
+				log.DebugLog.Printf("[detectProgramRunning] Found shell prompt pattern '%s' in line '%s', program NOT running", pattern, line)
 				return false
 			}
 		}
 
 		// Check for user@host:path$ pattern (common shell prompt)
 		if strings.Contains(line, "@") && (strings.HasSuffix(line, "$ ") || strings.HasSuffix(line, "# ") || strings.HasSuffix(line, "% ")) {
+			log.DebugLog.Printf("[detectProgramRunning] Found user@host shell prompt in line '%s', program NOT running", line)
 			return false
 		}
 	}
 
 	// If we didn't find explicit indicators either way, assume program is running
 	// This is a conservative default to avoid false restarts
+	log.DebugLog.Printf("[detectProgramRunning] No definitive indicators found, assuming program is running (conservative)")
 	return true
 }
 
