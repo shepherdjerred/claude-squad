@@ -782,6 +782,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			}
 			<-ch
 			m.state = stateDefault
+			// Save instances to persist LastOpenedAt
+			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+				m.handleError(err)
+			}
 		})
 		return m, nil
 	case keys.KeyRename:

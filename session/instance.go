@@ -47,6 +47,8 @@ type Instance struct {
 	CreatedAt time.Time
 	// UpdatedAt is the time the instance was last updated.
 	UpdatedAt time.Time
+	// LastOpenedAt is the time the user last attached to this instance.
+	LastOpenedAt *time.Time
 	// AutoYes is true if the instance should automatically press enter when prompted.
 	AutoYes bool
 	// Prompt is the initial prompt to pass to the instance on startup
@@ -84,6 +86,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		Width:            i.Width,
 		CreatedAt:        i.CreatedAt,
 		UpdatedAt:        time.Now(),
+		LastOpenedAt:     i.LastOpenedAt,
 		Program:          i.Program,
 		AutoYes:          i.AutoYes,
 		Archived:         i.Archived,
@@ -192,6 +195,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		Width:            data.Width,
 		CreatedAt:        data.CreatedAt,
 		UpdatedAt:        data.UpdatedAt,
+		LastOpenedAt:     data.LastOpenedAt,
 		Program:          data.Program,
 		Archived:         data.Archived,
 		Summary:          data.Summary,
@@ -439,6 +443,9 @@ func (i *Instance) Attach() (chan struct{}, error) {
 	if !i.started {
 		return nil, fmt.Errorf("cannot attach instance that has not been started")
 	}
+	// Track when the user last opened this instance
+	now := time.Now()
+	i.LastOpenedAt = &now
 	return i.session.Attach()
 }
 

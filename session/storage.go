@@ -10,16 +10,17 @@ import (
 
 // InstanceData represents the serializable data of an Instance
 type InstanceData struct {
-	Title     string    `json:"title"`
-	Path      string    `json:"path"`
-	Branch    string    `json:"branch"`
-	Status    Status    `json:"status"`
-	Height    int       `json:"height"`
-	Width     int       `json:"width"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	AutoYes   bool      `json:"auto_yes"`
-	Archived  bool      `json:"archived"`
+	Title        string     `json:"title"`
+	Path         string     `json:"path"`
+	Branch       string     `json:"branch"`
+	Status       Status     `json:"status"`
+	Height       int        `json:"height"`
+	Width        int        `json:"width"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	LastOpenedAt *time.Time `json:"last_opened_at,omitempty"`
+	AutoYes      bool       `json:"auto_yes"`
+	Archived     bool       `json:"archived"`
 
 	Program          string          `json:"program"`
 	Multiplexer      string          `json:"multiplexer"`
