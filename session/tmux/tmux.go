@@ -46,6 +46,9 @@ type TmuxSession struct {
 	// monitor monitors the tmux pane content and sends signals to the UI when it's status changes
 	monitor *statusMonitor
 
+	// lastHasUpdatedCheck is used to rate-limit HasUpdated calls
+	lastHasUpdatedCheck time.Time
+
 	// Initialized by Attach
 	// Deinitilaized by Detach
 	//
@@ -252,9 +255,19 @@ func (t *TmuxSession) SendKeys(keys string) error {
 	return err
 }
 
+// hasUpdatedRateLimit is the minimum time between HasUpdated checks
+const hasUpdatedRateLimit = 300 * time.Millisecond
+
 // HasUpdated checks if the tmux pane content has changed since the last tick. It also returns true if
 // the tmux pane has a prompt for aider or claude code.
+// This method is rate-limited to avoid excessive subprocess spawning.
 func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {
+	// Rate limit: don't check more than once per 300ms
+	if time.Since(t.lastHasUpdatedCheck) < hasUpdatedRateLimit {
+		return false, false
+	}
+	t.lastHasUpdatedCheck = time.Now()
+
 	content, err := t.CapturePaneContent()
 	if err != nil {
 		log.ErrorLog.Printf("error capturing pane content in status monitor: %v", err)
@@ -291,6 +304,9 @@ func (t *TmuxSession) Attach() (chan struct{}, error) {
 	if err == nil {
 		_ = t.updateWindowSize(cols, rows)
 	}
+
+	// Show a hint to the user about how to detach
+	fmt.Fprintf(os.Stdout, "\033[90m--- Press Ctrl+Q to detach ---\033[0m\n")
 
 	// The first goroutine should terminate when the ptmx is closed. We use the
 	// waitgroup to wait for it to finish.
