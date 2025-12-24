@@ -162,3 +162,38 @@ func (s *Storage) UpdateInstance(instance *Instance) error {
 func (s *Storage) DeleteAllInstances() error {
 	return s.state.DeleteAllInstances()
 }
+
+// StateSyncer is an optional interface for states that support sync from disk
+type StateSyncer interface {
+	RefreshFromDisk() (bool, error)
+}
+
+// SyncFromDisk checks if the state file has been modified by another process
+// and reloads instances if needed. Returns the new instances and whether a sync occurred.
+// The caller is responsible for merging these with any in-memory instances.
+func (s *Storage) SyncFromDisk() ([]*Instance, bool, error) {
+	// Check if the underlying state supports sync
+	syncer, ok := s.state.(StateSyncer)
+	if !ok {
+		return nil, false, nil
+	}
+
+	// Try to refresh from disk
+	refreshed, err := syncer.RefreshFromDisk()
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to refresh state from disk: %w", err)
+	}
+
+	if !refreshed {
+		return nil, false, nil
+	}
+
+	// State was refreshed, reload instances
+	log.InfoLog.Printf("State file changed, reloading instances from disk")
+	instances, err := s.LoadInstances()
+	if err != nil {
+		return nil, true, fmt.Errorf("failed to load instances after refresh: %w", err)
+	}
+
+	return instances, true, nil
+}
