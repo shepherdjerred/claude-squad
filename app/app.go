@@ -731,13 +731,17 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				return err
 			}
 
-			checkedOut, err := worktree.IsBranchCheckedOut()
-			if err != nil {
-				return err
-			}
+			// Only check if branch is checked out if worktree path exists
+			// Archived sessions may have had their worktree removed
+			if _, statErr := os.Stat(worktree.GetWorktreePath()); statErr == nil {
+				checkedOut, err := worktree.IsBranchCheckedOut()
+				if err != nil {
+					return err
+				}
 
-			if checkedOut {
-				return fmt.Errorf("instance %s is currently checked out", selected.Title)
+				if checkedOut {
+					return fmt.Errorf("instance %s is currently checked out", selected.Title)
+				}
 			}
 
 			// Delete from storage first
@@ -985,7 +989,12 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 		m.state = stateDefault
 		// Execute the action if it exists
 		if action != nil {
-			_ = action()
+			if msg := action(); msg != nil {
+				// Handle error messages from the action
+				if err, ok := msg.(error); ok {
+					m.handleError(err)
+				}
+			}
 		}
 	}
 
