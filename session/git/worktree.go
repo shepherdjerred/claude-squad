@@ -5,6 +5,7 @@ import (
 	"claude-squad/log"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -79,7 +80,14 @@ func NewGitWorktree(repoPath string, sessionName string) (tree *GitWorktree, bra
 
 	// Use sanitized branch name for the worktree directory name
 	worktreePath := filepath.Join(worktreeDir, branchName)
-	worktreePath = worktreePath + "_" + fmt.Sprintf("%x", time.Now().UnixNano())
+	// Extract suffix from session name for worktree path uniqueness
+	suffix := extractSuffixFromSessionName(sessionName)
+	if suffix != "" {
+		worktreePath = worktreePath + "_" + suffix
+	} else {
+		// Fallback to timestamp for backward compatibility
+		worktreePath = worktreePath + "_" + fmt.Sprintf("%x", time.Now().UnixNano())
+	}
 
 	return &GitWorktree{
 		repoPath:     repoPath,
@@ -131,4 +139,32 @@ func (g *GitWorktree) reportProgress(message string) {
 	if g.progressCallback != nil {
 		g.progressCallback(message)
 	}
+}
+
+// extractSuffixFromSessionName extracts the random word suffix from a session name.
+// Returns empty string if no suffix is found.
+func extractSuffixFromSessionName(sessionName string) string {
+	parts := strings.Split(sessionName, "_")
+	if len(parts) >= 2 {
+		// Check if last part looks like a word suffix (lowercase letters only)
+		lastPart := parts[len(parts)-1]
+		if isWordSuffix(lastPart) {
+			return lastPart
+		}
+	}
+	return ""
+}
+
+// isWordSuffix validates if a string looks like a random word suffix
+func isWordSuffix(s string) bool {
+	// Simple validation: only lowercase letters, 3-15 chars
+	if len(s) < 3 || len(s) > 15 {
+		return false
+	}
+	for _, r := range s {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	return true
 }
