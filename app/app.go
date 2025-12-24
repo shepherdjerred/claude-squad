@@ -45,6 +45,8 @@ const (
 	stateConfirm
 	// stateLoading is the state when a loading operation is in progress.
 	stateLoading
+	// stateFileBrowser is the state when the user is selecting a directory.
+	stateFileBrowser
 	// stateRename is the state when the user is renaming an instance.
 	stateRename
 )
@@ -98,6 +100,11 @@ type home struct {
 	confirmationOverlay *overlay.ConfirmationOverlay
 	// loadingOverlay displays loading progress
 	loadingOverlay *overlay.LoadingOverlay
+	// fileBrowserOverlay displays the file browser for selecting a directory
+	fileBrowserOverlay *overlay.FileBrowserOverlay
+
+	// pendingInstancePath stores the selected path from the file browser
+	pendingInstancePath string
 
 	// -- Background Services --
 
@@ -386,6 +393,25 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m.handleHelpState(msg)
 	}
 
+	if m.state == stateFileBrowser {
+		// Handle file browser key presses
+		shouldClose := m.fileBrowserOverlay.HandleKeyPress(msg)
+		if shouldClose {
+			if m.fileBrowserOverlay.IsSubmitted() {
+				// User selected a directory, proceed to name input
+				selectedPath := m.fileBrowserOverlay.GetSelectedPath()
+				m.fileBrowserOverlay = nil
+				return m.createInstanceWithPath(selectedPath)
+			} else if m.fileBrowserOverlay.IsCanceled() {
+				// User canceled, go back to default state
+				m.fileBrowserOverlay = nil
+				m.state = stateDefault
+				m.promptAfterName = false
+			}
+		}
+		return m, nil
+	}
+
 	if m.state == stateNew {
 		// Handle quit commands first. Don't handle q because the user might want to type that.
 		if msg.String() == "ctrl+c" {
@@ -573,44 +599,15 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
-		instance, err := session.NewInstance(session.InstanceOptions{
-			Title:       "",
-			Path:        ".",
-			Program:     m.program,
-			Multiplexer: m.appConfig.Multiplexer,
-		})
-		if err != nil {
-			return m, m.handleError(err)
-		}
-
-		m.newInstanceFinalizer = m.list.AddInstance(instance)
-		m.list.SetSelectedInstance(m.list.NumInstances() - 1)
-		m.state = stateNew
-		m.menu.SetState(ui.StateNewInstance)
 		m.promptAfterName = true
-
-		return m, nil
+		return m.showFileBrowser()
 	case keys.KeyNew:
 		if m.list.NumInstances() >= GlobalInstanceLimit {
 			return m, m.handleError(
 				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
 		}
-		instance, err := session.NewInstance(session.InstanceOptions{
-			Title:       "",
-			Path:        ".",
-			Program:     m.program,
-			Multiplexer: m.appConfig.Multiplexer,
-		})
-		if err != nil {
-			return m, m.handleError(err)
-		}
-
-		m.newInstanceFinalizer = m.list.AddInstance(instance)
-		m.list.SetSelectedInstance(m.list.NumInstances() - 1)
-		m.state = stateNew
-		m.menu.SetState(ui.StateNewInstance)
-
-		return m, nil
+		m.promptAfterName = false
+		return m.showFileBrowser()
 	case keys.KeyUp:
 		m.list.Up()
 		return m, tea.Batch(highlightCmd, m.instanceChanged())
@@ -947,6 +944,47 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 	return nil
 }
 
+// showFileBrowser displays the file browser overlay for selecting a directory
+func (m *home) showFileBrowser() (tea.Model, tea.Cmd) {
+	// Get current working directory as default starting point
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "~"
+	}
+
+	fb, err := overlay.NewFileBrowserOverlay(cwd)
+	if err != nil {
+		return m, m.handleError(fmt.Errorf("failed to open file browser: %w", err))
+	}
+
+	// Set size based on current window dimensions
+	fb.SetSize(70, 25)
+	m.fileBrowserOverlay = fb
+	m.state = stateFileBrowser
+
+	return m, nil
+}
+
+// createInstanceWithPath creates a new instance with the given path and enters the name input state
+func (m *home) createInstanceWithPath(path string) (tea.Model, tea.Cmd) {
+	instance, err := session.NewInstance(session.InstanceOptions{
+		Title:       "",
+		Path:        path,
+		Program:     m.program,
+		Multiplexer: m.appConfig.Multiplexer,
+	})
+	if err != nil {
+		return m, m.handleError(err)
+	}
+
+	m.newInstanceFinalizer = m.list.AddInstance(instance)
+	m.list.SetSelectedInstance(m.list.NumInstances() - 1)
+	m.state = stateNew
+	m.menu.SetState(ui.StateNewInstance)
+
+	return m, nil
+}
+
 // handleImportOrphanedSessions finds and imports orphaned Zellij sessions
 func (m *home) handleImportOrphanedSessions() (tea.Model, tea.Cmd) {
 	// Get list of currently tracked instance titles
@@ -1059,6 +1097,11 @@ func (m *home) View() string {
 			log.ErrorLog.Printf("loading overlay is nil")
 		}
 		return overlay.PlaceOverlay(0, 0, m.loadingOverlay.Render(), mainView, true, true)
+	} else if m.state == stateFileBrowser {
+		if m.fileBrowserOverlay == nil {
+			log.ErrorLog.Printf("file browser overlay is nil")
+		}
+		return overlay.PlaceOverlay(0, 0, m.fileBrowserOverlay.Render(), mainView, true, true)
 	}
 
 	return mainView
